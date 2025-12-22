@@ -15,7 +15,7 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     # FIX: We use just the model name. The SDK handles the 'models/' prefix internally.
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- DATA STRUCTURES ---
 def get_initial_agent(name=""):
