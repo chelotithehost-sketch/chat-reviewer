@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from openpyxl import load_workbook
 import io
 import os
 import google.generativeai as genai
@@ -14,7 +13,8 @@ st.set_page_config(page_title="HostAfrica AI Auditor - Security Edition", layout
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash') # Using the latest flash model
+    # UPDATED: Use gemini-2.5-flash as requested
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
@@ -38,7 +38,7 @@ def get_agent_transcripts(uploaded_zip, target_name):
                         data = json.load(f)
                         chat_text = ""
                         belongs_to_agent = False
-                        # Extract full chat history to see what the bot/client said before the agent joined
+                        # Extracting transcript data based on tawk.to JSON structure
                         for msg in data.get("messages", []):
                             name = msg.get("sender", {}).get("n", "Visitor")
                             body = msg.get("msg", "")
@@ -49,45 +49,33 @@ def get_agent_transcripts(uploaded_zip, target_name):
                     except: continue
     return transcripts
 
-# --- ENHANCED AI AUDIT LOGIC WITH PIN PROTOCOLS ---
+# --- ENHANCED AI AUDIT LOGIC ---
 def run_comprehensive_audit(transcripts):
     sample = "\n---\n".join(transcripts[:12])
     
     prompt = f"""
     You are a Senior Technical QA Auditor at HostAfrica. 
-    Audit the agent's performance with a specific focus on Technical Skills and Security Protocols.
+    Evaluate the agent ONLY. Ignore bots/automated messages.
 
-    CRITICAL EVALUATION FRAMEWORK:
-    
+    CRITICAL SCALING RULE:
+    - All metrics MUST be between 0.0 and 5.0. 
+    - overall_score MUST be between 0.0 and 10.0.
+
+    EVALUATION FRAMEWORK:
     1. SECURITY & PIN VERIFICATION (Weight: 20%)
-       - Verify if the agent followed "Client Support PIN" protocols.
-       - PENALTY: Did the agent ask for a PIN that the client ALREADY provided to the bot/pre-chat form? (Redundancy friction).
-       - PENALTY: Did the agent fail to ask for a PIN before performing account-specific actions? (Security risk).
-    
+       - Verify if agent followed "Client Support PIN" protocols.
+       - Check if agent asked for a PIN already provided (Redundancy).
     2. TECHNICAL CAPABILITY (Weight: 25%)
-       - Accuracy for DNS, Email (IMAP/SMTP), SSL, WordPress.
-       - Proper use of diagnostic tools (Ping, Traceroute, WHOIS, cPanel).
-    
+       - Accuracy for DNS, Email, SSL, WordPress.
+       - Use of tools: Ping, Traceroute, WHOIS, cPanel.
     3. COMMUNICATION & EMPATHY (Weight: 15%)
-       - Ability to explain complex concepts simply.
-       - Tone appropriateness.
-    
     4. INVESTIGATIVE APPROACH (Weight: 20%)
-       - Proactive server-side diagnostics before requesting client action.
-       - Verifying root causes vs making assumptions.
-    
     5. LIVECHAT OWNERSHIP (Weight: 20%)
-       - Accountability and follow-through.
-       - Providing updates during troubleshooting.
 
-    EVALUATION REQUIREMENTS:
-    ✓ Focus ONLY on the human agent.
-    ✓ Identify specific examples where the agent correctly handled PIN verification vs where they were redundant.
-    
-    Return ONLY a JSON object:
+    Return ONLY JSON:
     {{
         "overall_score": 0.0,
-        "overall_assessment": "Summary of strengths/weaknesses",
+        "overall_assessment": "Summary text",
         "metrics": {{
             "security_pin_protocol": 0.0,
             "technical_capability": 0.0,
@@ -95,14 +83,13 @@ def run_comprehensive_audit(transcripts):
             "investigative_approach": 0.0,
             "chat_ownership": 0.0
         }},
-        "key_strengths": ["Example of good skill"],
-        "key_development_areas": ["Example of weakness and fix"],
-        "pin_protocol_feedback": "Specific evaluation of how they handled Support PINs",
-        "technical_examples": [{{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "a" }}],
-        "training_recommendations": ["Area 1", "Area 2"]
+        "key_strengths": [],
+        "key_development_areas": [],
+        "pin_protocol_feedback": "Text",
+        "technical_examples": [{{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }}]
     }}
 
-    Analyze these interactions:
+    Chats:
     {sample}
     """
     try:
@@ -117,16 +104,20 @@ def run_comprehensive_audit(transcripts):
 
 # --- UI DISPLAY ---
 def display_results(audit_data):
-    st.markdown(f"## Overall Score: {audit_data['overall_score']}/10")
+    # Fix scaling in case AI hallucinated high numbers
+    score = min(float(audit_data.get('overall_score', 0)), 10.0)
+    st.markdown(f"## Overall Score: {score}/10")
     
     st.markdown("### 📋 Overall Assessment")
     st.info(audit_data.get("overall_assessment"))
 
-    st.markdown("### 📊 Metrics")
+    st.markdown("### 📊 Metrics (Out of 5.0)")
     m = audit_data.get("metrics", {})
     cols = st.columns(len(m))
     for i, (k, v) in enumerate(m.items()):
-        cols[i].metric(k.replace("_", " ").title(), f"{v}/5.0")
+        # Ensure individual metrics don't exceed 5.0
+        display_val = min(float(v), 5.0)
+        cols[i].metric(k.replace("_", " ").title(), f"{display_val}/5.0")
 
     st.markdown("### 🔐 PIN Verification Analysis")
     st.warning(audit_data.get("pin_protocol_feedback"))
@@ -141,31 +132,50 @@ def display_results(audit_data):
 
     st.markdown("### 🔧 Technical Examples")
     for ex in audit_data.get("technical_examples", []):
-        with st.expander(f"Issue: {ex['issue']}"):
+        with st.expander(f"Issue: {ex.get('issue', 'N/A')}"):
             st.write(f"**PIN Handled Well?** {ex.get('pin_handled_well')}")
-            st.write(f"**Action:** {ex['agent_action']}")
-            st.write(f"**Suggested Improvement:** {ex['improvement']}")
+            st.write(f"**Action:** {ex.get('agent_action')}")
+            st.write(f"**Improvement:** {ex.get('improvement')}")
 
 # --- APP FLOW ---
 st.sidebar.title("HostAfrica Team")
 m_name = st.sidebar.text_input("Agent Name")
-if st.sidebar.button("Add Agent"):
-    if m_name: st.session_state.agents[m_name] = get_initial_agent(m_name)
+if st.sidebar.button("➕ Add Agent"):
+    if m_name and m_name not in st.session_state.agents:
+        st.session_state.agents[m_name] = get_initial_agent(m_name)
 
 agent_list = list(st.session_state.agents.keys())
 if agent_list:
-    sel_name = st.sidebar.selectbox("Reviewing:", agent_list)
+    sel_name = st.sidebar.selectbox("Select Agent:", agent_list)
+    
+    # AMMENDED: Restore Remove Agent option
+    if st.sidebar.button(f"🗑️ Remove {sel_name}"):
+        del st.session_state.agents[sel_name]
+        st.rerun()
+
     agent = st.session_state.agents[sel_name]
     
-    t1, t2 = st.tabs(["Audit", "Results"])
+    t1, t2 = st.tabs(["🤖 Audit Interface", "📈 Detailed Results"])
+    
     with t1:
-        zip_file = st.file_uploader("Upload ZIP", type="zip")
-        if zip_file and st.button("Run Security & Tech Audit"):
-            texts = get_agent_transcripts(zip_file, sel_name)
-            if texts:
-                res = run_comprehensive_audit(texts)
-                if res:
-                    agent["audit_data"] = res
-                    st.success("Audit Done!")
+        st.subheader(f"Analyzing: {sel_name}")
+        zip_file = st.file_uploader("Upload tawk.to ZIP", type="zip")
+        
+        if zip_file:
+            # AMMENDED: Clear loading indication
+            if st.button("Run Comprehensive Audit"):
+                with st.spinner(f"AI is currently auditing {len(zip_file.name)} transcripts..."):
+                    texts = get_agent_transcripts(zip_file, sel_name)
+                    if texts:
+                        res = run_comprehensive_audit(texts)
+                        if res:
+                            agent["audit_data"] = res
+                            st.success("Analysis Complete! View the 'Detailed Results' tab.")
+                    else:
+                        st.error("No chats found for this agent in the uploaded file.")
+
     with t2:
-        if agent["audit_data"]: display_results(agent["audit_data"])
+        if agent["audit_data"]:
+            display_results(agent["audit_data"])
+        else:
+            st.info("No audit data found. Please run an audit in the first tab.")
