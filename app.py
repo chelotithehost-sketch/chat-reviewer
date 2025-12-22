@@ -8,30 +8,24 @@ import json
 import zipfile
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="AI Agent Auditor - Comprehensive Mode", layout="wide")
+st.set_page_config(page_title="HostAfrica AI Auditor - Security Edition", layout="wide")
 
 # --- GEMINI AI SETUP ---
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash') # Using the latest flash model
 
 # --- DATA STRUCTURES ---
+if 'agents' not in st.session_state:
+    st.session_state.agents = {}
+
 def get_initial_agent(name=""):
     return {
         "name": name,
-        "total_chats": 0,
-        "overall_score": 0.0,
-        "summary": "",
-        "improvements": "",
-        "csat_areas": {
-            "Timing": 0.0, "Tone": 0.0, "Language & Grammar": 0.0,
-            "Empathy / Listening": 0.0, "Endings": 0.0, "Escalations": 0.0
-        }
+        "audit_data": None,
+        "total_chats": 0
     }
-
-if 'agents' not in st.session_state:
-    st.session_state.agents = {}
 
 # --- RECURSIVE ZIP PROCESSING ---
 def get_agent_transcripts(uploaded_zip, target_name):
@@ -44,6 +38,7 @@ def get_agent_transcripts(uploaded_zip, target_name):
                         data = json.load(f)
                         chat_text = ""
                         belongs_to_agent = False
+                        # Extract full chat history to see what the bot/client said before the agent joined
                         for msg in data.get("messages", []):
                             name = msg.get("sender", {}).get("n", "Visitor")
                             body = msg.get("msg", "")
@@ -54,28 +49,60 @@ def get_agent_transcripts(uploaded_zip, target_name):
                     except: continue
     return transcripts
 
-# --- AI AUDIT LOGIC ---
+# --- ENHANCED AI AUDIT LOGIC WITH PIN PROTOCOLS ---
 def run_comprehensive_audit(transcripts):
-    # Sample up to 10 chats to provide deep context to the AI
-    sample = "\n---\n".join(transcripts[:10])
+    sample = "\n---\n".join(transcripts[:12])
     
     prompt = f"""
-    You are a Senior QA Auditor. Analyze these customer support chats.
-    
-    TASK 1: Provide an Overall Score out of 10.
-    TASK 2: Rate the agent (1.0 to 5.0) for: Timing, Tone, Language & Grammar, Empathy, Endings, Escalations.
-    TASK 3: Generate a "Summary of 20 Chat Examples" based on the patterns found in these transcripts. 
-    TASK 4: Suggest specific areas for improvement.
+    You are a Senior Technical QA Auditor at HostAfrica. 
+    Audit the agent's performance with a specific focus on Technical Skills and Security Protocols.
 
-    Return ONLY a JSON object with this structure:
+    CRITICAL EVALUATION FRAMEWORK:
+    
+    1. SECURITY & PIN VERIFICATION (Weight: 20%)
+       - Verify if the agent followed "Client Support PIN" protocols.
+       - PENALTY: Did the agent ask for a PIN that the client ALREADY provided to the bot/pre-chat form? (Redundancy friction).
+       - PENALTY: Did the agent fail to ask for a PIN before performing account-specific actions? (Security risk).
+    
+    2. TECHNICAL CAPABILITY (Weight: 25%)
+       - Accuracy for DNS, Email (IMAP/SMTP), SSL, WordPress.
+       - Proper use of diagnostic tools (Ping, Traceroute, WHOIS, cPanel).
+    
+    3. COMMUNICATION & EMPATHY (Weight: 15%)
+       - Ability to explain complex concepts simply.
+       - Tone appropriateness.
+    
+    4. INVESTIGATIVE APPROACH (Weight: 20%)
+       - Proactive server-side diagnostics before requesting client action.
+       - Verifying root causes vs making assumptions.
+    
+    5. LIVECHAT OWNERSHIP (Weight: 20%)
+       - Accountability and follow-through.
+       - Providing updates during troubleshooting.
+
+    EVALUATION REQUIREMENTS:
+    ✓ Focus ONLY on the human agent.
+    ✓ Identify specific examples where the agent correctly handled PIN verification vs where they were redundant.
+    
+    Return ONLY a JSON object:
     {{
-        "overall_score": 8.5,
-        "metrics": {{"Timing": 4.0, "Tone": 4.5, "Language & Grammar": 5.0, "Empathy / Listening": 4.0, "Endings": 4.0, "Escalations": 4.0}},
-        "summary_of_20": "1. [Brief Summary] - Improvement: [Suggestion]\\n2. [Brief Summary]...",
-        "improvement_suggestions": "Point 1... Point 2..."
+        "overall_score": 0.0,
+        "overall_assessment": "Summary of strengths/weaknesses",
+        "metrics": {{
+            "security_pin_protocol": 0.0,
+            "technical_capability": 0.0,
+            "communication_clarity": 0.0,
+            "investigative_approach": 0.0,
+            "chat_ownership": 0.0
+        }},
+        "key_strengths": ["Example of good skill"],
+        "key_development_areas": ["Example of weakness and fix"],
+        "pin_protocol_feedback": "Specific evaluation of how they handled Support PINs",
+        "technical_examples": [{{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "a" }}],
+        "training_recommendations": ["Area 1", "Area 2"]
     }}
 
-    Chats:
+    Analyze these interactions:
     {sample}
     """
     try:
@@ -85,55 +112,60 @@ def run_comprehensive_audit(transcripts):
         elif "```" in text: text = text.split("```")[1].split("```")[0]
         return json.loads(text.strip())
     except Exception as e:
-        st.error(f"AI Error: {e}")
+        st.error(f"AI Generation Error: {e}")
         return None
 
-# --- UI ---
-st.sidebar.title("Team Management")
-manual_name = st.sidebar.text_input("Add Agent Name")
-if st.sidebar.button("➕ Add"):
-    if manual_name: st.session_state.agents[manual_name] = get_initial_agent(manual_name)
+# --- UI DISPLAY ---
+def display_results(audit_data):
+    st.markdown(f"## Overall Score: {audit_data['overall_score']}/10")
+    
+    st.markdown("### 📋 Overall Assessment")
+    st.info(audit_data.get("overall_assessment"))
+
+    st.markdown("### 📊 Metrics")
+    m = audit_data.get("metrics", {})
+    cols = st.columns(len(m))
+    for i, (k, v) in enumerate(m.items()):
+        cols[i].metric(k.replace("_", " ").title(), f"{v}/5.0")
+
+    st.markdown("### 🔐 PIN Verification Analysis")
+    st.warning(audit_data.get("pin_protocol_feedback"))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### ✅ Strengths")
+        for s in audit_data.get("key_strengths", []): st.success(s)
+    with c2:
+        st.markdown("### 🎯 Areas to Improve")
+        for d in audit_data.get("key_development_areas", []): st.warning(d)
+
+    st.markdown("### 🔧 Technical Examples")
+    for ex in audit_data.get("technical_examples", []):
+        with st.expander(f"Issue: {ex['issue']}"):
+            st.write(f"**PIN Handled Well?** {ex.get('pin_handled_well')}")
+            st.write(f"**Action:** {ex['agent_action']}")
+            st.write(f"**Suggested Improvement:** {ex['improvement']}")
+
+# --- APP FLOW ---
+st.sidebar.title("HostAfrica Team")
+m_name = st.sidebar.text_input("Agent Name")
+if st.sidebar.button("Add Agent"):
+    if m_name: st.session_state.agents[m_name] = get_initial_agent(m_name)
 
 agent_list = list(st.session_state.agents.keys())
-if not agent_list:
-    st.warning("Add an agent to start.")
-    st.stop()
-
-selected_name = st.sidebar.selectbox("Agent:", agent_list)
-current_agent = st.session_state.agents[selected_name]
-
-st.title(f"Review: {selected_name}")
-tab1, tab2 = st.tabs(["🤖 AI Audit", "📈 Results & Insights"])
-
-with tab1:
-    data_zip = st.file_uploader("Upload Chat ZIP", type="zip")
-    if data_zip and st.button("Run Comprehensive Audit"):
-        with st.spinner("AI is analyzing chats and generating 20 examples..."):
-            texts = get_agent_transcripts(data_zip, selected_name)
+if agent_list:
+    sel_name = st.sidebar.selectbox("Reviewing:", agent_list)
+    agent = st.session_state.agents[sel_name]
+    
+    t1, t2 = st.tabs(["Audit", "Results"])
+    with t1:
+        zip_file = st.file_uploader("Upload ZIP", type="zip")
+        if zip_file and st.button("Run Security & Tech Audit"):
+            texts = get_agent_transcripts(zip_file, sel_name)
             if texts:
-                results = run_comprehensive_audit(texts)
-                if results:
-                    current_agent["csat_areas"].update(results["metrics"])
-                    current_agent["overall_score"] = results["overall_score"]
-                    current_agent["summary"] = results["summary_of_20"]
-                    current_agent["improvements"] = results["improvement_suggestions"]
-                    current_agent["total_chats"] = len(texts)
-                    st.success("Analysis Complete!")
-            else: st.error("No chats found for this agent.")
-
-with tab2:
-    st.header(f"Overall Rating: {current_agent['overall_score']}/10")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Performance Metrics")
-        for area, val in current_agent["csat_areas"].items():
-            current_agent["csat_areas"][area] = st.slider(area, 0.0, 5.0, float(val))
-    
-    with col2:
-        st.subheader("Key Improvements")
-        st.write(current_agent["improvements"])
-
-    st.divider()
-    st.subheader("Summary of 20 Chat Examples & Specific Suggestions")
-    st.info(current_agent["summary"])
+                res = run_comprehensive_audit(texts)
+                if res:
+                    agent["audit_data"] = res
+                    st.success("Audit Done!")
+    with t2:
+        if agent["audit_data"]: display_results(agent["audit_data"])
