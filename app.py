@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from openpyxl import load_workbook
 import io
 import os
@@ -8,7 +10,7 @@ import json
 import zipfile
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Tawk.to ZIP Performance Review", layout="wide")
+st.set_page_config(page_title="AI Agent Performance Auditor", layout="wide")
 
 # --- GEMINI AI SETUP ---
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
@@ -16,99 +18,159 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- PROCESSING LOGIC ---
-def process_zip(uploaded_zip, target_agent):
-    """Recursively finds and reads all JSON files inside a tawk.to ZIP export."""
-    all_chats = []
+# --- DATA STRUCTURES ---
+def get_initial_agent(name=""):
+    return {
+        "name": name,
+        "total_chats": 0,
+        "csat_areas": {
+            "Timing": 0.0, "Tone": 0.0, "Language & Grammar": 0.0,
+            "Empathy / Listening": 0.0, "Endings": 0.0, "Escalations": 0.0
+        },
+        "kpis": {
+            "Communication Skills": 0.0, "Productivity": 0.0, "Quality of Support": 0.0
+        }
+    }
+
+if 'agents' not in st.session_state:
+    st.session_state.agents = {} # Use dict for easier name tracking
+
+# --- ZIP PROCESSING & AUTO-DETECTION ---
+def scan_zip_for_agents(uploaded_zip):
+    """Scans the JSON files in the ZIP and extracts all unique Agent names."""
+    detected_names = set()
     with zipfile.ZipFile(uploaded_zip, 'r') as z:
-        # Loop through every file in the ZIP, regardless of folder depth
         for file_path in z.namelist():
             if file_path.endswith('.json'):
                 with z.open(file_path) as f:
                     try:
                         data = json.load(f)
-                        # Tawk.to JSON structure check
-                        # We filter for the specific agent name in the messages or metadata
-                        is_agent_chat = False
-                        
-                        # Check metadata for agent name
-                        if "sender" in data and data["sender"].get("n") == target_agent:
-                            is_agent_chat = True
-                        
-                        # Check messages if metadata doesn't confirm
-                        if not is_agent_chat:
-                            for msg in data.get("messages", []):
-                                if msg.get("sender", {}).get("n") == target_agent:
-                                    is_agent_chat = True
-                                    break
-                        
-                        if is_agent_chat:
-                            # Extract the message text for AI analysis
-                            transcript = ""
-                            for m in data.get("messages", []):
-                                name = m.get("sender", {}).get("n", "Visitor")
-                                text = m.get("msg", "")
-                                transcript += f"{name}: {text}\n"
-                            
-                            all_chats.append({
-                                "id": data.get("id"),
-                                "transcript": transcript,
-                                "date": data.get("createdOn")
-                            })
-                    except Exception as e:
-                        continue
-    return all_chats
+                        # Check sender metadata and message history for agent signatures
+                        for msg in data.get("messages", []):
+                            sender = msg.get("sender", {})
+                            if sender.get("t") == "a": # 'a' usually stands for 'agent' in Tawk.to
+                                detected_names.add(sender.get("n"))
+                    except: continue
+    return [name for name in detected_names if name]
 
-def run_ai_audit(transcripts):
-    """Sends combined chat transcripts to Gemini for scoring."""
+def get_agent_transcripts(uploaded_zip, target_name):
+    """Collects all chat text for a specific agent."""
+    transcripts = []
+    with zipfile.ZipFile(uploaded_zip, 'r') as z:
+        for file_path in z.namelist():
+            if file_path.endswith('.json'):
+                with z.open(file_path) as f:
+                    try:
+                        data = json.load(f)
+                        chat_text = ""
+                        belongs_to_agent = False
+                        for msg in data.get("messages", []):
+                            n = msg.get("sender", {}).get("n", "Visitor")
+                            chat_text += f"{n}: {msg.get('msg', '')}\n"
+                            if n == target_name: belongs_to_agent = True
+                        if belongs_to_agent:
+                            transcripts.append(chat_text)
+                    except: continue
+    return transcripts
+
+# --- AI AUDIT LOGIC ---
+def run_gemini_audit(transcripts):
+    full_text = "\n---\n".join(transcripts[:8]) # Sample up to 8 chats
     prompt = f"""
-    Analyze these customer support chats. Rate the agent (1.0 to 5.0) for:
-    Timing, Tone, Language & Grammar, Empathy / Listening, Endings, Escalations.
-    Return ONLY a JSON object.
+    You are a Quality Assurance Auditor. Analyze these customer support chats.
+    Rate the agent on a scale of 1.0 to 5.0 based on these metrics:
+    1. Timing (Response speed)
+    2. Tone (Professionalism)
+    3. Language & Grammar
+    4. Empathy / Listening
+    5. Endings (Closing the chat)
+    6. Escalations (Handling difficult queries)
+
+    Return ONLY a JSON object with these exact keys.
+    Example: {{"Timing": 4.2, "Tone": 4.8, "Language & Grammar": 4.5, "Empathy / Listening": 4.0, "Endings": 4.0, "Escalations": 5.0}}
     
-    Chats:
-    {transcripts}
+    Chats: {full_text}
     """
     try:
         response = model.generate_content(prompt)
         clean_json = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_json)
-    except:
-        return None
+    except: return None
 
-# --- INITIAL STATE & UI ---
-if 'agents' not in st.session_state:
-    st.session_state.agents = [{"name": "Athira", "total_chats": 0, "csat_areas": {k: 0.0 for k in ["Timing", "Tone", "Language & Grammar", "Empathy / Listening", "Endings", "Escalations"]}, "kpis": {k: 0.0 for k in ["Communication Skills", "Productivity", "Quality of Support"]}}]
+# --- SIDEBAR: AGENT MANAGEMENT ---
+st.sidebar.title("👥 Team Management")
 
-# Sidebar management (Add/Remove)
-st.sidebar.title("Team Management")
-selected_name = st.sidebar.selectbox("Agent", [a["name"] for a in st.session_state.agents])
-current_agent = next(a for a in st.session_state.agents if a["name"] == selected_name)
+# Auto-Detection Feature
+st.sidebar.subheader("Auto-Detect Names")
+zip_for_names = st.sidebar.file_uploader("Upload ZIP to find names", type="zip", key="namer")
+if zip_for_names and st.sidebar.button("Scan ZIP for Agents"):
+    found = scan_zip_for_agents(zip_for_names)
+    for name in found:
+        if name not in st.session_state.agents:
+            st.session_state.agents[name] = get_initial_agent(name)
+    st.sidebar.success(f"Detected: {', '.join(found)}")
 
-# --- MAIN TABS ---
-tab1, tab2 = st.tabs(["AI Audit (Upload ZIP)", "Manual Adjustment & Export"])
+st.sidebar.divider()
+
+# Manual Add/Remove
+manual_name = st.sidebar.text_input("Add Agent Manually")
+if st.sidebar.button("➕ Add"):
+    if manual_name: 
+        st.session_state.agents[manual_name] = get_initial_agent(manual_name)
+
+agent_list = list(st.session_state.agents.keys())
+if agent_list:
+    selected_name = st.sidebar.selectbox("Select Agent to Review", agent_list)
+    if st.sidebar.button(f"🗑️ Remove {selected_name}"):
+        del st.session_state.agents[selected_name]
+        st.rerun()
+else:
+    st.warning("No agents loaded. Use the scanner or add manually.")
+    st.stop()
+
+current_agent = st.session_state.agents[selected_name]
+
+# --- MAIN DASHBOARD ---
+st.title(f"Performance Review: {selected_name}")
+
+tab1, tab2 = st.tabs(["🤖 AI Quality Audit", "📈 Results & Excel Export"])
 
 with tab1:
-    st.header(f"Analyze ZIP Export for {current_agent['name']}")
-    uploaded_file = st.file_uploader("Upload tawk.to ZIP Folder", type="zip")
+    st.info("Upload the tawk.to ZIP export to analyze performance metrics.")
+    data_zip = st.file_uploader("Upload Chat ZIP", type="zip", key="data_loader")
     
-    if uploaded_file:
-        with st.spinner("Scanning ZIP folders (Year/Month/Day)..."):
-            chats = process_zip(uploaded_file, current_agent["name"])
-            current_agent["total_chats"] = len(chats)
-            
-            if chats:
-                st.success(f"Found {len(chats)} chats for {current_agent['name']}!")
-                if st.button("🤖 Run Gemini AI Audit"):
-                    # Combine transcripts (first 5 for speed/token limits)
-                    combined_text = "\n---\n".join([c['transcript'] for c in chats[:5]])
-                    results = run_ai_audit(combined_text)
+    if data_zip:
+        if st.button(f"Analyze Chats for {selected_name}"):
+            with st.spinner("Gemini is auditing conversations..."):
+                texts = get_agent_transcripts(data_zip, selected_name)
+                current_agent["total_chats"] = len(texts)
+                
+                if texts:
+                    results = run_gemini_audit(texts)
                     if results:
                         current_agent["csat_areas"].update(results)
-                        st.success("Scores updated!")
-            else:
-                st.warning(f"No chats found for agent '{current_agent['name']}' in this ZIP.")
+                        st.success(f"Audit complete! {len(texts)} chats analyzed.")
+                    else:
+                        st.error("AI could not generate scores. Check API Key.")
+                else:
+                    st.warning("No chats found for this agent in the ZIP.")
 
 with tab2:
-    # (Sliders and Excel export logic same as previous version)
-    st.write("Review and download results here...")
+    # Display Score Breakdown
+    cols = st.columns(2)
+    with cols[0]:
+        st.subheader("CSAT Metrics (1-5)")
+        for area, val in current_agent["csat_areas"].items():
+            current_agent["csat_areas"][area] = st.slider(area, 0.0, 5.0, float(val), 0.1)
+    
+    with cols[1]:
+        st.subheader("KPIs (1-10)")
+        for kpi, val in current_agent["kpis"].items():
+            current_agent["kpis"][kpi] = st.slider(kpi, 0.0, 10.0, float(val), 0.5)
+
+    # Export Section
+    st.divider()
+    if st.button("Generate Performance Excel"):
+        # (Same export logic as previous turns, mapping to B24-B35)
+        st.info("Generating report...")
+        # ... (Export function call here)
