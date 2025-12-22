@@ -5,13 +5,21 @@ import plotly.graph_objects as go
 from openpyxl import load_workbook
 import io
 import os
+import google.generativeai as genai
+import json
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Team Performance Review", layout="wide")
+st.set_page_config(page_title="AI Team Performance Review", layout="wide")
 
-# --- INITIAL STATE & LOGIC ---
+# --- GEMINI AI SETUP ---
+# You will set this key in Streamlit Cloud Secrets or local environment
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- INITIAL STATE ---
 def get_initial_agent(name=""):
-    """Creates a fresh agent dictionary based on the original JSX structure."""
     return {
         "name": name,
         "period": "Oct 1, 2025 - Dec 22, 2025",
@@ -23,128 +31,132 @@ def get_initial_agent(name=""):
         "kpis": {
             "Communication Skills": 0.0, "Productivity": 0.0, "Quality of Support": 0.0
         },
-        "chat_breakdown": {
-            "negative": 0, "positive": 0, "neutral": 0, "avg_duration": "0:00"
-        }
+        "chat_breakdown": {"negative": 0, "positive": 0, "neutral": 0}
     }
 
 if 'agents' not in st.session_state:
-    # Start with a default agent
     st.session_state.agents = [get_initial_agent("Athira")]
-    st.session_state.agents[0]["total_chats"] = 40
 
+# --- LOGIC FUNCTIONS ---
 def calculate_score(agent):
-    """Calculates a weighted percentage score (Average of CSAT % and KPI %)."""
     csat_score = sum(agent["csat_areas"].values())
     csat_max = len(agent["csat_areas"]) * 5
     kpi_score = sum(agent["kpis"].values())
     kpi_max = len(agent["kpis"]) * 10
-    
     csat_perc = (csat_score / csat_max * 100) if csat_max > 0 else 0
     kpi_perc = (kpi_score / kpi_max * 100) if kpi_max > 0 else 0
     return round((csat_perc + kpi_perc) / 2, 1)
 
 def get_grade(score):
-    """Determines the letter grade based on the score."""
     if score >= 90: return "A", "green"
     if score >= 80: return "B", "blue"
     if score >= 70: return "C", "orange"
-    if score >= 60: return "D", "red"
-    return "F", "grey"
+    return "F", "red"
+
+def run_ai_audit(chat_data):
+    """Sends chat transcripts to Gemini and parses the scores."""
+    prompt = f"""
+    Analyze these customer support chats. Rate the agent on a scale of 1.0 to 5.0 for:
+    Timing, Tone, Language & Grammar, Empathy / Listening, Endings, Escalations.
+    
+    Return ONLY a valid JSON object. Example:
+    {{"Timing": 4.5, "Tone": 4.0, "Language & Grammar": 5.0, "Empathy / Listening": 4.0, "Endings": 4.5, "Escalations": 5.0}}
+
+    Chats:
+    {chat_data}
+    """
+    try:
+        response = model.generate_content(prompt)
+        # Clean up response text in case Gemini adds markdown code blocks
+        clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(clean_json)
+    except Exception as e:
+        st.error(f"AI Audit Failed: {e}")
+        return None
 
 def export_to_excel(agent_data, template_path="template.xlsx"):
-    """Maps app data directly to specific Excel cells from your screenshots."""
-    if not os.path.exists(template_path):
-        return None
-    
+    if not os.path.exists(template_path): return None
     wb = load_workbook(template_path)
     ws = wb.active
-
-    # Mapping to Column B based on your image (Rows 24-29 for CSAT, 32-34 for KPIs)
-    ws['B24'] = agent_data['csat_areas']['Timing']
-    ws['B25'] = agent_data['csat_areas']['Tone']
-    ws['B26'] = agent_data['csat_areas']['Language & Grammar']
-    ws['B27'] = agent_data['csat_areas']['Empathy / Listening']
-    ws['B28'] = agent_data['csat_areas']['Endings']
-    ws['B29'] = agent_data['csat_areas']['Escalations']
-
-    ws['B32'] = agent_data['kpis']['Communication Skills']
-    ws['B33'] = agent_data['kpis']['Productivity']
-    ws['B34'] = agent_data['kpis']['Quality of Support']
-
-    # Final Overall Score
+    # Cell Mapping
+    ws['B24'], ws['B25'], ws['B26'] = agent_data['csat_areas']['Timing'], agent_data['csat_areas']['Tone'], agent_data['csat_areas']['Language & Grammar']
+    ws['B27'], ws['B28'], ws['B29'] = agent_data['csat_areas']['Empathy / Listening'], agent_data['csat_areas']['Endings'], agent_data['csat_areas']['Escalations']
+    ws['B32'], ws['B33'], ws['B34'] = agent_data['kpis']['Communication Skills'], agent_data['kpis']['Productivity'], agent_data['kpis']['Quality of Support']
     ws['B35'] = f"{calculate_score(agent_data)}%"
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
-    virtual_workbook = io.BytesIO()
-    wb.save(virtual_workbook)
-    return virtual_workbook.getvalue()
-
-# --- SIDEBAR: AGENT MANAGEMENT ---
+# --- SIDEBAR ---
 st.sidebar.title("Team Management")
-
-# Add Agent
 new_name = st.sidebar.text_input("New Agent Name")
 if st.sidebar.button("➕ Add Agent", use_container_width=True):
-    if new_name and new_name not in [a["name"] for a in st.session_state.agents]:
+    if new_name:
         st.session_state.agents.append(get_initial_agent(new_name))
         st.rerun()
 
-st.sidebar.markdown("---")
-
-# Select Agent
 agent_names = [a["name"] for a in st.session_state.agents]
 selected_name = st.sidebar.selectbox("Current Agent", agent_names)
-agent_idx = agent_names.index(selected_name)
-current_agent = st.session_state.agents[agent_idx]
+current_agent = next(a for a in st.session_state.agents if a["name"] == selected_name)
 
-# Remove Agent (Original Logic: Only if > 1 remains)
 if len(st.session_state.agents) > 1:
-    if st.sidebar.button(f"🗑️ Remove {selected_name}", type="secondary", use_container_width=True):
-        st.session_state.agents.pop(agent_idx)
+    if st.sidebar.button(f"🗑️ Remove {selected_name}", type="secondary"):
+        st.session_state.agents = [a for a in st.session_state.agents if a["name"] != selected_name]
         st.rerun()
 
-# --- MAIN DASHBOARD ---
+# --- MAIN UI ---
 score = calculate_score(current_agent)
 grade, color = get_grade(score)
+st.title(f"🚀 {current_agent['name']}'s Performance")
 
-st.title(f"📊 {current_agent['name']}'s Performance")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 col1.metric("Total Chats", current_agent["total_chats"])
 col2.metric("Overall Score", f"{score}%")
 col3.markdown(f"### Grade: :{color}[{grade}]")
-col4.write(f"Period: {current_agent['period']}")
 
-tab1, tab2, tab3 = st.tabs(["Edit Scores", "Batch Upload CSV", "Excel Export"])
+tab1, tab2, tab3 = st.tabs(["Manual Scoring", "AI Quality Audit (Batch CSV)", "Excel Export"])
 
 with tab1:
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("CSAT Areas (1-5)")
         for area in current_agent["csat_areas"]:
             current_agent["csat_areas"][area] = st.slider(area, 0.0, 5.0, current_agent["csat_areas"][area], 0.5)
     with c2:
-        st.subheader("KPIs (1-10)")
         for kpi in current_agent["kpis"]:
             current_agent["kpis"][kpi] = st.slider(kpi, 0.0, 10.0, current_agent["kpis"][kpi], 0.5)
 
 with tab2:
-    st.info("Upload multiple CSVs from Tawk.to to merge chat counts for this agent.")
-    uploaded_files = st.file_uploader("Select CSV Files", type="csv", accept_multiple_files=True)
-    if uploaded_files:
-        # Batch processing logic
-        all_dfs = [pd.read_csv(f) for f in uploaded_files]
-        combined = pd.concat(all_dfs)
-        agent_col = next((c for c in combined.columns if c in ['Agent', 'Assignee']), None)
+    st.info("Upload CSVs to calculate volume and run AI analysis on transcripts.")
+    files = st.file_uploader("Upload CSVs", type="csv", accept_multiple_files=True)
+    if files:
+        df = pd.concat([pd.read_csv(f) for f in files])
+        agent_col = next((c for c in df.columns if c in ['Agent', 'Assignee']), None)
+        text_col = next((c for c in df.columns if c in ['Messages', 'Transcript', 'Body', 'Text']), None)
+        
         if agent_col:
-            count = len(combined[combined[agent_col] == current_agent["name"]])
-            current_agent["total_chats"] = count
-            st.success(f"Merged {len(uploaded_files)} files. Found {count} chats for {current_agent['name']}.")
+            agent_chats = df[df[agent_col] == current_agent["name"]]
+            current_agent["total_chats"] = len(agent_chats)
+            st.success(f"Found {len(agent_chats)} chats for {current_agent['name']}.")
+            
+            if text_col and GEMINI_API_KEY:
+                if st.button("🤖 Run AI Analysis on Transcripts"):
+                    with st.spinner("Gemini is auditing chats..."):
+                        # Sample first 5 chats to avoid token limits
+                        sample_text = "\n---\n".join(agent_chats[text_col].astype(str).head(5))
+                        results = run_ai_audit(sample_text)
+                        if results:
+                            for area, val in results.items():
+                                if area in current_agent["csat_areas"]:
+                                    current_agent["csat_areas"][area] = val
+                            st.success("Scores updated based on AI feedback!")
+                            st.rerun()
+            elif not text_col:
+                st.warning("No transcript column found for AI analysis.")
 
 with tab3:
-    st.subheader("Download to Excel")
-    if st.button("Generate Filled Report"):
-        excel_data = export_to_excel(current_agent)
-        if excel_data:
-            st.download_button("📥 Download Excel File", excel_data, f"{current_agent['name']}_Review.xlsx")
+    if st.button("Generate Excel Report"):
+        data = export_to_excel(current_agent)
+        if data:
+            st.download_button("📥 Download Report", data, f"{current_agent['name']}_Review.xlsx")
         else:
-            st.error("Missing 'template.xlsx' in GitHub folder!")
+            st.error("template.xlsx not found.")
