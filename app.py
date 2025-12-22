@@ -51,7 +51,8 @@ def get_agent_transcripts(uploaded_zip, target_name):
 
 # --- ENHANCED AI AUDIT LOGIC ---
 def run_comprehensive_audit(transcripts):
-    sample = "\n---\n".join(transcripts[:12])
+    # UPDATED: Increased from 12 to 30 to provide more data for 20 examples
+    sample = "\n---\n".join(transcripts[:30])
     
     prompt = f"""
     You are a Senior Technical QA Auditor at HostAfrica. 
@@ -72,6 +73,11 @@ def run_comprehensive_audit(transcripts):
     4. INVESTIGATIVE APPROACH (Weight: 20%)
     5. LIVECHAT OWNERSHIP (Weight: 20%)
 
+    IMPORTANT: Provide exactly 20 technical examples in the "technical_examples" array.
+    Analyze different interactions across the provided chats to identify 20 distinct examples.
+    If there are fewer than 20 distinct issues, create examples for different aspects of the same issues
+    or break down complex interactions into multiple examples.
+
     Return ONLY JSON:
     {{
         "overall_score": 0.0,
@@ -86,7 +92,28 @@ def run_comprehensive_audit(transcripts):
         "key_strengths": [],
         "key_development_areas": [],
         "pin_protocol_feedback": "Text",
-        "technical_examples": [{{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }}]
+        "technical_examples": [
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }},
+            {{ "issue": "x", "agent_action": "y", "pin_handled_well": "Yes/No/Redundant", "improvement": "z" }}
+        ]
     }}
 
     Chats:
