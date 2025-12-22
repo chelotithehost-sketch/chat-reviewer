@@ -8,7 +8,7 @@ import json
 import zipfile
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="AI Agent Performance Auditor", layout="wide")
+st.set_page_config(page_title="AI Agent Auditor - Deep Scan Mode", layout="wide")
 
 # --- GEMINI AI SETUP ---
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
@@ -33,138 +33,145 @@ def get_initial_agent(name=""):
 if 'agents' not in st.session_state:
     st.session_state.agents = {}
 
-# --- ZIP PROCESSING & AUTO-DETECTION ---
-def scan_zip_for_agents(uploaded_zip):
-    detected_names = set()
-    with zipfile.ZipFile(uploaded_zip, 'r') as z:
-        for file_path in z.namelist():
-            if file_path.endswith('.json'):
-                with z.open(file_path) as f:
-                    try:
-                        data = json.load(f)
-                        for msg in data.get("messages", []):
-                            sender = msg.get("sender", {})
-                            if sender.get("t") == "a": 
-                                detected_names.add(sender.get("n"))
-                    except: continue
-    return [name for name in detected_names if name]
-
-def get_agent_transcripts(uploaded_zip, target_name):
+# --- RECURSIVE ZIP PROCESSING ---
+def get_agent_transcripts(uploaded_zip, target_name, debug=False):
+    """Recursively finds JSONs in Year/Month/Day folders and extracts transcripts."""
     transcripts = []
+    debug_log = []
+    
     with zipfile.ZipFile(uploaded_zip, 'r') as z:
-        for file_path in z.namelist():
+        # namelist() ignores the folder hierarchy and sees every file path
+        all_files = z.namelist()
+        
+        for file_path in all_files:
             if file_path.endswith('.json'):
+                if debug: debug_log.append(f"Found JSON: {file_path}")
+                
                 with z.open(file_path) as f:
                     try:
                         data = json.load(f)
                         chat_text = ""
                         belongs_to_agent = False
+                        
+                        # Extract messages from the 'messages' list
                         for msg in data.get("messages", []):
-                            n = msg.get("sender", {}).get("n", "Visitor")
-                            chat_text += f"{n}: {msg.get('msg', '')}\n"
-                            if n == target_name: belongs_to_agent = True
+                            sender_data = msg.get("sender", {})
+                            name = sender_data.get("n", "Visitor")
+                            message_body = msg.get("msg", "")
+                            
+                            chat_text += f"{name}: {message_body}\n"
+                            
+                            # Match against target agent name
+                            if name == target_name:
+                                belongs_to_agent = True
+                        
                         if belongs_to_agent:
                             transcripts.append(chat_text)
-                    except: continue
-    return transcripts
+                            if debug: debug_log.append(f"✅ Matched agent '{target_name}' in this file.")
+                    except Exception as e:
+                        if debug: debug_log.append(f"❌ Error reading {file_path}: {e}")
+                        continue
+                        
+    return transcripts, debug_log
 
 # --- AI AUDIT LOGIC ---
 def run_gemini_audit(transcripts):
-    full_text = "\n---\n".join(transcripts[:8]) 
+    """Sends transcripts to Gemini to determine 1-5 scores."""
+    full_text = "\n---\n".join(transcripts[:8]) # Sample first 8 for efficiency
     prompt = f"""
-    You are a Quality Assurance Auditor. Analyze these customer support chats.
-    Rate the agent on a scale of 1.0 to 5.0 based on:
-    1. Timing (Response speed)
-    2. Tone (Professionalism)
-    3. Language & Grammar
-    4. Empathy / Listening
-    5. Endings (Closing the chat)
-    6. Escalations (Handling difficult queries)
-    Return ONLY a JSON object.
-    Example: {{"Timing": 4.2, "Tone": 4.8, "Language & Grammar": 4.5, "Empathy / Listening": 4.0, "Endings": 4.0, "Escalations": 5.0}}
-    Chats: {full_text}
+    You are a Quality Assurance Auditor. Analyze the following customer support chats.
+    Rate the agent's performance on a scale of 1.0 to 5.0 for these metrics:
+    1. Timing (Response speed & delay)
+    2. Tone (Professionalism & friendliness)
+    3. Language & Grammar (Accuracy)
+    4. Empathy / Listening (Acknowledging concerns)
+    5. Endings (Closing with help offered)
+    6. Escalations (Handling transfers or difficult tech)
+
+    Return ONLY a valid JSON object. Example:
+    {{"Timing": 4.0, "Tone": 5.0, "Language & Grammar": 4.5, "Empathy / Listening": 4.0, "Endings": 4.0, "Escalations": 5.0}}
+
+    Chats:
+    {full_text}
     """
     try:
         response = model.generate_content(prompt)
+        # Clean potential markdown from AI response
         clean_json = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_json)
-    except: return None
+    except Exception as e:
+        st.error(f"Gemini API Error: {e}")
+        return None
 
 # --- EXPORT LOGIC ---
 def export_to_excel(agent, template_path="template.xlsx"):
     if not os.path.exists(template_path): return None
     wb = load_workbook(template_path)
     ws = wb.active
-    # Mapping to your template (B24-B35)
-    ws['B24'] = agent["csat_areas"]["Timing"]
-    ws['B25'] = agent["csat_areas"]["Tone"]
-    ws['B26'] = agent["csat_areas"]["Language & Grammar"]
-    ws['B27'] = agent["csat_areas"]["Empathy / Listening"]
-    ws['B28'] = agent["csat_areas"]["Endings"]
-    ws['B29'] = agent["csat_areas"]["Escalations"]
-    ws['B32'] = agent["kpis"]["Communication Skills"]
-    ws['B33'] = agent["kpis"]["Productivity"]
-    ws['B34'] = agent["kpis"]["Quality of Support"]
+    # Standard cell mapping for your report
+    ws['B24'], ws['B25'], ws['B26'] = agent["csat_areas"]["Timing"], agent["csat_areas"]["Tone"], agent["csat_areas"]["Language & Grammar"]
+    ws['B27'], ws['B28'], ws['B29'] = agent["csat_areas"]["Empathy / Listening"], agent["csat_areas"]["Endings"], agent["csat_areas"]["Escalations"]
+    ws['B32'], ws['B33'], ws['B34'] = agent["kpis"]["Communication Skills"], agent["kpis"]["Productivity"], agent["kpis"]["Quality of Support"]
     
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
 
-# --- SIDEBAR ---
+# --- SIDEBAR & AGENT LIST ---
 st.sidebar.title("👥 Team Management")
-zip_for_names = st.sidebar.file_uploader("Upload ZIP to find names", type="zip", key="namer")
-if zip_for_names and st.sidebar.button("Scan ZIP for Agents"):
-    found = scan_zip_for_agents(zip_for_names)
-    for name in found:
-        if name not in st.session_state.agents:
-            st.session_state.agents[name] = get_initial_agent(name)
-    st.sidebar.success(f"Detected: {', '.join(found)}")
+debug_mode = st.sidebar.checkbox("🐞 Enable Debug Mode")
 
-manual_name = st.sidebar.text_input("Add Agent Manually")
-if st.sidebar.button("➕ Add"):
+manual_name = st.sidebar.text_input("Add Agent Name (e.g. Athira)")
+if st.sidebar.button("➕ Add Agent"):
     if manual_name: st.session_state.agents[manual_name] = get_initial_agent(manual_name)
 
 agent_list = list(st.session_state.agents.keys())
 if agent_list:
-    selected_name = st.sidebar.selectbox("Select Agent", agent_list)
-    if st.sidebar.button(f"🗑️ Remove {selected_name}"):
-        del st.session_state.agents[selected_name]
-        st.rerun()
+    selected_name = st.sidebar.selectbox("Reviewing:", agent_list)
     current_agent = st.session_state.agents[selected_name]
 else:
-    st.warning("Please add or scan for agents.")
+    st.warning("Please add an agent in the sidebar.")
     st.stop()
 
-# --- MAIN DASHBOARD ---
+# --- MAIN UI ---
 st.title(f"Performance Review: {selected_name}")
-tab1, tab2 = st.tabs(["🤖 AI Quality Audit", "📈 Results & Excel Export"])
+tab1, tab2 = st.tabs(["🤖 AI Quality Audit", "📈 Final Scores & Export"])
 
 with tab1:
-    data_zip = st.file_uploader("Upload Chat ZIP", type="zip", key="data_loader")
-    if data_zip and st.button(f"Analyze Chats for {selected_name}"):
-        with st.spinner("Gemini is auditing conversations..."):
-            texts = get_agent_transcripts(data_zip, selected_name)
-            if texts:
-                results = run_gemini_audit(texts)
-                if results:
-                    current_agent["csat_areas"].update(results)
-                    st.success(f"Audit complete! {len(texts)} chats analyzed.")
-                else: st.error("AI analysis failed.")
-            else: st.warning("No chats found.")
+    st.info("Upload the tawk.to ZIP. The AI will recursively search all subfolders for JSON chats.")
+    data_zip = st.file_uploader("Upload ZIP File", type="zip")
+    
+    if data_zip:
+        if st.button(f"🔍 Audit {selected_name}"):
+            with st.spinner(f"Scanning deep folders for {selected_name}..."):
+                texts, logs = get_agent_transcripts(data_zip, selected_name, debug=debug_mode)
+                
+                if debug_mode:
+                    with st.expander("🐞 View Debug Log"):
+                        for line in logs: st.text(line)
+                
+                if texts:
+                    results = run_gemini_audit(texts)
+                    if results:
+                        current_agent["csat_areas"].update(results)
+                        current_agent["total_chats"] = len(texts)
+                        st.success(f"Audit Complete! Analyzed {len(texts)} chats.")
+                else:
+                    st.error(f"No chats found for '{selected_name}' in the ZIP. Use Debug Mode to see why.")
 
 with tab2:
-    cols = st.columns(2)
-    with cols[0]:
-        st.subheader("CSAT Metrics (1-5)")
-        for area, val in current_agent["csat_areas"].items():
-            current_agent["csat_areas"][area] = st.slider(area, 0.0, 5.0, float(val), 0.1)
-    with cols[1]:
-        st.subheader("KPIs (1-10)")
-        for kpi, val in current_agent["kpis"].items():
-            current_agent["kpis"][kpi] = st.slider(kpi, 0.0, 10.0, float(val), 0.5)
+    st.subheader("Adjusted Scores")
+    c1, c2 = st.columns(2)
+    with c1:
+        for area in current_agent["csat_areas"]:
+            current_agent["csat_areas"][area] = st.slider(area, 0.0, 5.0, float(current_agent["csat_areas"][area]), 0.1)
+    with c2:
+        for kpi in current_agent["kpis"]:
+            current_agent["kpis"][kpi] = st.slider(kpi, 0.0, 10.0, float(current_agent["kpis"][kpi]), 0.5)
 
-    if st.button("Generate Performance Excel"):
+    if st.button("📥 Download Final Excel Report"):
         report = export_to_excel(current_agent)
         if report:
-            st.download_button("📥 Download Report", report, f"{selected_name}_Review.xlsx")
-        else: st.error("template.xlsx not found in directory.")
+            st.download_button("Click to Download", report, f"{selected_name}_Review.xlsx")
+        else:
+            st.error("template.xlsx not found in your GitHub folder.")
