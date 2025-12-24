@@ -87,13 +87,55 @@ def get_initial_agent(name=""):
 
 # --- RECURSIVE ZIP PROCESSING ---
 def get_agent_transcripts(uploaded_zip, target_name):
-    """Extract transcripts for a specific agent from ZIP file"""
+    """Extract transcripts for a specific agent from ZIP file (supports nested ZIPs)"""
     transcripts = []
     chat_metadata = []
     
     with zipfile.ZipFile(uploaded_zip, 'r') as z:
         for file_path in z.namelist():
-            if file_path.endswith('.json'):
+            # Handle nested ZIP files (agent-specific ZIPs inside main ZIP)
+            if file_path.endswith('.zip'):
+                try:
+                    with z.open(file_path) as nested_zip_file:
+                        nested_zip_bytes = io.BytesIO(nested_zip_file.read())
+                        with zipfile.ZipFile(nested_zip_bytes, 'r') as nested_z:
+                            for nested_file_path in nested_z.namelist():
+                                if nested_file_path.endswith('.json'):
+                                    with nested_z.open(nested_file_path) as f:
+                                        try:
+                                            data = json.load(f)
+                                            chat_text = ""
+                                            belongs_to_agent = False
+                                            message_count = 0
+                                            
+                                            chat_id = data.get("id", "unknown")
+                                            started_at = data.get("started", "")
+                                            
+                                            for msg in data.get("messages", []):
+                                                name = msg.get("sender", {}).get("n", "Visitor")
+                                                body = msg.get("msg", "")
+                                                timestamp = msg.get("t", "")
+                                                
+                                                chat_text += f"[{timestamp}] {name}: {body}\n"
+                                                message_count += 1
+                                                
+                                                if name == target_name:
+                                                    belongs_to_agent = True
+                                            
+                                            if belongs_to_agent and message_count > 3:
+                                                transcripts.append(chat_text)
+                                                chat_metadata.append({
+                                                    "chat_id": chat_id,
+                                                    "started_at": started_at,
+                                                    "message_count": message_count
+                                                })
+                                        except:
+                                            continue
+                except:
+                    continue
+            
+            # Also handle direct JSON files in main ZIP (original functionality)
+            elif file_path.endswith('.json'):
                 with z.open(file_path) as f:
                     try:
                         data = json.load(f)
@@ -101,11 +143,9 @@ def get_agent_transcripts(uploaded_zip, target_name):
                         belongs_to_agent = False
                         message_count = 0
                         
-                        # Extract metadata
                         chat_id = data.get("id", "unknown")
                         started_at = data.get("started", "")
                         
-                        # Extracting transcript data based on tawk.to JSON structure
                         for msg in data.get("messages", []):
                             name = msg.get("sender", {}).get("n", "Visitor")
                             body = msg.get("msg", "")
@@ -117,7 +157,7 @@ def get_agent_transcripts(uploaded_zip, target_name):
                             if name == target_name:
                                 belongs_to_agent = True
                         
-                        if belongs_to_agent and message_count > 3:  # Only include substantial chats
+                        if belongs_to_agent and message_count > 3:
                             transcripts.append(chat_text)
                             chat_metadata.append({
                                 "chat_id": chat_id,
@@ -129,6 +169,46 @@ def get_agent_transcripts(uploaded_zip, target_name):
                         continue
     
     return transcripts, chat_metadata
+
+def get_all_agents_from_zip(uploaded_zip):
+    """Auto-detect all agent names from a ZIP file (including nested ZIPs)"""
+    agent_names = set()
+    
+    with zipfile.ZipFile(uploaded_zip, 'r') as z:
+        for file_path in z.namelist():
+            # Check nested ZIPs
+            if file_path.endswith('.zip'):
+                try:
+                    with z.open(file_path) as nested_zip_file:
+                        nested_zip_bytes = io.BytesIO(nested_zip_file.read())
+                        with zipfile.ZipFile(nested_zip_bytes, 'r') as nested_z:
+                            for nested_file_path in nested_z.namelist():
+                                if nested_file_path.endswith('.json'):
+                                    with nested_z.open(nested_file_path) as f:
+                                        try:
+                                            data = json.load(f)
+                                            for msg in data.get("messages", []):
+                                                name = msg.get("sender", {}).get("n", "")
+                                                if name and name != "Visitor" and not name.startswith("Bot"):
+                                                    agent_names.add(name)
+                                        except:
+                                            continue
+                except:
+                    continue
+            
+            # Check direct JSON files
+            elif file_path.endswith('.json'):
+                with z.open(file_path) as f:
+                    try:
+                        data = json.load(f)
+                        for msg in data.get("messages", []):
+                            name = msg.get("sender", {}).get("n", "")
+                            if name and name != "Visitor" and not name.startswith("Bot"):
+                                agent_names.add(name)
+                    except:
+                        continue
+    
+    return sorted(list(agent_names))
 
 # --- ENHANCED AI AUDIT LOGIC ---
 def run_comprehensive_audit(transcripts, agent_name):
@@ -838,20 +918,56 @@ def main():
     st.sidebar.title("🏢 Agent Management")
     st.sidebar.markdown("---")
     
-    # Add new agent
-    st.sidebar.subheader("Add New Agent")
-    new_agent_name = st.sidebar.text_input("Agent Name", key="new_agent_input")
+    # Bulk upload mode
+    bulk_mode = st.sidebar.checkbox("📦 Enable Bulk Upload Mode", help="Process multiple agents from one ZIP file")
     
-    if st.sidebar.button("➕ Add Agent", use_container_width=True):
-        if new_agent_name:
-            if new_agent_name not in st.session_state.agents:
-                st.session_state.agents[new_agent_name] = get_initial_agent(new_agent_name)
-                st.sidebar.success(f"Added {new_agent_name}")
-                st.rerun()
+    st.sidebar.markdown("---")
+    
+    if not bulk_mode:
+        # Single agent mode (original)
+        # Add new agent
+        st.sidebar.subheader("Add New Agent")
+        new_agent_name = st.sidebar.text_input("Agent Name", key="new_agent_input")
+        
+        if st.sidebar.button("➕ Add Agent", use_container_width=True):
+            if new_agent_name:
+                if new_agent_name not in st.session_state.agents:
+                    st.session_state.agents[new_agent_name] = get_initial_agent(new_agent_name)
+                    st.sidebar.success(f"Added {new_agent_name}")
+                    st.rerun()
+                else:
+                    st.sidebar.warning("Agent already exists")
             else:
-                st.sidebar.warning("Agent already exists")
+                st.sidebar.error("Please enter an agent name")
+    else:
+        # Bulk mode
+        st.sidebar.subheader("Bulk Agent Entry")
+        bulk_input_method = st.sidebar.radio(
+            "Choose input method:",
+            ["Manual Entry", "Auto-Detect from ZIP"]
+        )
+        
+        if bulk_input_method == "Manual Entry":
+            agent_names_input = st.sidebar.text_area(
+                "Enter agent names (one per line):",
+                placeholder="Athira\nTimothy\nIan\nMavis",
+                height=150
+            )
+            
+            if st.sidebar.button("➕ Add All Agents", use_container_width=True):
+                names = [n.strip() for n in agent_names_input.split('\n') if n.strip()]
+                if names:
+                    added_count = 0
+                    for name in names:
+                        if name not in st.session_state.agents:
+                            st.session_state.agents[name] = get_initial_agent(name)
+                            added_count += 1
+                    st.sidebar.success(f"Added {added_count} agent(s)")
+                    st.rerun()
+                else:
+                    st.sidebar.error("Please enter at least one agent name")
         else:
-            st.sidebar.error("Please enter an agent name")
+            st.sidebar.info("Upload a ZIP file below, then click 'Detect Agents' to auto-find all agents in the file")
     
     st.sidebar.markdown("---")
     
@@ -881,8 +997,15 @@ def main():
     # Main content area
     agent = st.session_state.agents[selected_agent]
     
+    # Check if bulk mode is enabled
+    bulk_mode = st.session_state.get('bulk_mode_enabled', False)
+    
     # Tabs
-    tab1, tab2 = st.tabs(["🤖 Audit Interface", "📈 Detailed Results & Export"])
+    if len(agent_list) > 1:
+        tab1, tab2, tab3 = st.tabs(["🤖 Single Audit", "📦 Bulk Audit", "📈 Detailed Results & Export"])
+    else:
+        tab1, tab2 = st.tabs(["🤖 Audit Interface", "📈 Detailed Results & Export"])
+        tab3 = None
     
     with tab1:
         st.subheader(f"Analyzing: {selected_agent}")
@@ -958,7 +1081,170 @@ def main():
         else:
             st.info("📤 Please upload a ZIP file containing tawk.to chat transcripts to begin analysis")
     
-    with tab2:
+    # Bulk Audit Tab (only show if multiple agents)
+    if len(agent_list) > 1 and tab3 is not None:
+        with tab2:
+            st.subheader(f"📦 Bulk Audit: {len(agent_list)} Agents")
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                bulk_zip_file = st.file_uploader(
+                    "Upload ZIP file (can contain nested ZIPs for each agent)",
+                    type="zip",
+                    key="bulk_zip_uploader",
+                    help="Upload a single ZIP containing multiple agent ZIPs, or a ZIP with all JSON files"
+                )
+            
+            with col2:
+                if bulk_zip_file:
+                    if st.button("🔍 Detect Agents in ZIP", use_container_width=True):
+                        with st.spinner("Scanning ZIP file for agents..."):
+                            detected_agents = get_all_agents_from_zip(bulk_zip_file)
+                            if detected_agents:
+                                st.success(f"Found {len(detected_agents)} agent(s)!")
+                                st.write("**Detected agents:**")
+                                for agent_name in detected_agents:
+                                    if agent_name not in st.session_state.agents:
+                                        st.session_state.agents[agent_name] = get_initial_agent(agent_name)
+                                    st.write(f"- {agent_name}")
+                                st.rerun()
+                            else:
+                                st.warning("No agents detected in ZIP file")
+            
+            if bulk_zip_file:
+                st.markdown("---")
+                st.markdown("### 🚀 Bulk Processing")
+                
+                # Show agents to be processed
+                agents_to_process = list(st.session_state.agents.keys())
+                st.info(f"**{len(agents_to_process)} agent(s) will be audited:** {', '.join(agents_to_process)}")
+                
+                col1, col2, col3 = st.columns(3)
+                with col2:
+                    if st.button("🚀 Run Bulk Audit", use_container_width=True, type="primary"):
+                        st.markdown("### 📊 Processing Results")
+                        
+                        # Progress tracking
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        results_summary = []
+                        total_agents = len(agents_to_process)
+                        
+                        for idx, agent_name in enumerate(agents_to_process, 1):
+                            status_text.text(f"Processing {agent_name} ({idx}/{total_agents})...")
+                            progress_bar.progress(idx / total_agents)
+                            
+                            agent_obj = st.session_state.agents[agent_name]
+                            
+                            # Extract transcripts
+                            transcripts, metadata = get_agent_transcripts(bulk_zip_file, agent_name)
+                            
+                            if transcripts:
+                                # Run audit
+                                audit_result = run_comprehensive_audit(transcripts, agent_name)
+                                
+                                if audit_result:
+                                    # Update agent data
+                                    agent_obj["audit_data"] = audit_result
+                                    agent_obj["total_chats"] = len(transcripts)
+                                    agent_obj["audit_timestamp"] = datetime.now()
+                                    
+                                    results_summary.append({
+                                        "agent": agent_name,
+                                        "score": audit_result.get('overall_score', 0),
+                                        "chats": len(transcripts),
+                                        "status": "✅ Success"
+                                    })
+                                else:
+                                    results_summary.append({
+                                        "agent": agent_name,
+                                        "score": "N/A",
+                                        "chats": len(transcripts),
+                                        "status": "❌ Failed"
+                                    })
+                            else:
+                                results_summary.append({
+                                    "agent": agent_name,
+                                    "score": "N/A",
+                                    "chats": 0,
+                                    "status": "⚠️ No chats found"
+                                })
+                        
+                        status_text.text("✅ Bulk audit complete!")
+                        progress_bar.progress(1.0)
+                        
+                        st.success("🎉 Bulk audit completed!")
+                        
+                        # Display results table
+                        st.markdown("### 📊 Results Summary")
+                        results_df = pd.DataFrame(results_summary)
+                        st.dataframe(results_df, use_container_width=True, hide_index=True)
+                        
+                        # Download all reports button
+                        st.markdown("### 📥 Download All Reports")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            if st.button("📦 Generate All Excel Reports", use_container_width=True):
+                                with st.spinner("Generating all Excel reports..."):
+                                    import zipfile as zf
+                                    zip_buffer = io.BytesIO()
+                                    
+                                    with zf.ZipFile(zip_buffer, 'w', zf.ZIP_DEFLATED) as zip_file:
+                                        for agent_name in agents_to_process:
+                                            agent_obj = st.session_state.agents[agent_name]
+                                            if agent_obj.get("audit_data"):
+                                                excel_path = f"/tmp/review_{agent_name}.xlsx"
+                                                generate_excel_report(agent_obj, agent_name, excel_path)
+                                                
+                                                with open(excel_path, 'rb') as f:
+                                                    zip_file.writestr(f"{agent_name}_Performance_Review.xlsx", f.read())
+                                    
+                                    zip_buffer.seek(0)
+                                    st.download_button(
+                                        label="⬇️ Download All Excel Reports (ZIP)",
+                                        data=zip_buffer.getvalue(),
+                                        file_name=f"HostAfrica_Bulk_Reviews_{datetime.now().strftime('%Y%m%d')}.zip",
+                                        mime="application/zip",
+                                        use_container_width=True
+                                    )
+                                    st.success("✅ All Excel reports ready!")
+                        
+                        with col2:
+                            if st.button("📄 Generate All PDF Reports", use_container_width=True):
+                                with st.spinner("Generating all PDF reports..."):
+                                    import zipfile as zf
+                                    zip_buffer = io.BytesIO()
+                                    
+                                    with zf.ZipFile(zip_buffer, 'w', zf.ZIP_DEFLATED) as zip_file:
+                                        for agent_name in agents_to_process:
+                                            agent_obj = st.session_state.agents[agent_name]
+                                            if agent_obj.get("audit_data"):
+                                                pdf_path = f"/tmp/review_{agent_name}.pdf"
+                                                generate_pdf_report(agent_obj, agent_name, pdf_path)
+                                                
+                                                with open(pdf_path, 'rb') as f:
+                                                    zip_file.writestr(f"{agent_name}_Performance_Review.pdf", f.read())
+                                    
+                                    zip_buffer.seek(0)
+                                    st.download_button(
+                                        label="⬇️ Download All PDF Reports (ZIP)",
+                                        data=zip_buffer.getvalue(),
+                                        file_name=f"HostAfrica_Bulk_Reviews_PDF_{datetime.now().strftime('%Y%m%d')}.zip",
+                                        mime="application/zip",
+                                        use_container_width=True
+                                    )
+                                    st.success("✅ All PDF reports ready!")
+            else:
+                st.info("📤 Please upload a ZIP file to begin bulk processing")
+        
+        tab_results = tab3
+    else:
+        tab_results = tab2
+    
+    with tab_results:
         if agent.get("audit_data"):
             # Display results
             display_results(agent["audit_data"])
