@@ -69,8 +69,8 @@ st.markdown("""
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Using gemini-2.5-flash-lite for better free tier availability
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    # Using gemini-1.5-flash for better free tier availability
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
@@ -82,9 +82,7 @@ def get_initial_agent(name=""):
         "audit_data": None,
         "total_chats": 0,
         "audit_timestamp": None,
-        "raw_transcripts": [],
-        "review_period_days": REVIEW_PERIOD_DAYS,
-        "chat_dates": []
+        "raw_transcripts": []
     }
 
 # --- RECURSIVE ZIP PROCESSING ---
@@ -133,10 +131,8 @@ def get_agent_transcripts(uploaded_zip, target_name):
     return transcripts, chat_metadata
 
 # --- ENHANCED AI AUDIT LOGIC ---
-def run_comprehensive_audit(transcripts, agent_name, total_chats, review_period_days):
+def run_comprehensive_audit(transcripts, agent_name):
     """Run comprehensive AI-powered audit with detailed analysis"""
-    
-    # Calculate chat volume metrics
     
     # Use up to 50 transcripts for comprehensive analysis
     sample_size = min(50, len(transcripts))
@@ -145,10 +141,6 @@ def run_comprehensive_audit(transcripts, agent_name, total_chats, review_period_
     prompt = f"""
 You are a Senior Technical QA Auditor at HostAfrica with 10+ years of experience evaluating technical support quality.
 You are conducting a comprehensive performance review of agent: {agent_name}
-
-REVIEW CONTEXT:
-- Total chats analyzed: {total_chats}
-- Review period: {review_period_days} days (quarterly review)
 
 CRITICAL INSTRUCTIONS:
 1. Analyze ONLY the agent's performance, NOT bots or automated messages
@@ -278,7 +270,7 @@ Return ONLY valid JSON in this exact structure:
     ],
     "critical_incidents": [
         "Any critical errors, serious security lapses, or major issues (be specific)"
-    ],
+    ]
 }}
 
 CHAT TRANSCRIPTS TO ANALYZE:
@@ -304,8 +296,6 @@ Remember: Base ALL examples and assessments on the ACTUAL transcripts provided a
         audit_result['overall_score'] = min(float(audit_result.get('overall_score', 0)), 10.0)
         for key in audit_result.get('metrics', {}):
             audit_result['metrics'][key] = min(float(audit_result['metrics'][key]), 5.0)
-        
-        # Add volume metrics to audit result
         
         return audit_result
         
@@ -372,45 +362,12 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     # Build story
     story = []
     
-    # Get volume metrics
-    
     # Title
     story.append(Paragraph("PERFORMANCE REVIEW REPORT", title_style))
     story.append(Paragraph(f"<b>Agent:</b> {agent_name}", styles['Normal']))
     story.append(Paragraph(f"<b>Review Date:</b> {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Paragraph(f"<b>Chats Analyzed:</b> {agent_data.get('total_chats', 0)}", styles['Normal']))
-    story.append(Paragraph(f"<b>Review Period:</b> {agent_data.get('review_period_days', 90)} days (Quarterly)", styles['Normal']))
     story.append(Spacer(1, 0.3*inch))
-    
-    # Chat Volume Performance Section
-        
-        volume_data = [
-            ['Metric', 'Value', 'Assessment'],
-        ]
-        
-        volume_table = Table(volume_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
-        
-        # Color code based on performance
-        rating_color = colors.HexColor('#28a745')  # Green
-            rating_color = colors.HexColor('#ffc107')  # Yellow
-            rating_color = colors.HexColor('#dc3545')  # Red
-        
-        volume_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f0f0')]),
-            ('BACKGROUND', (2, 3), (2, 3), rating_color),
-            ('TEXTCOLOR', (2, 3), (2, 3), colors.white)
-        ]))
-        story.append(volume_table)
-        story.append(Spacer(1, 0.3*inch))
     
     # Overall Score
     overall_score = agent_data.get('audit_data', {}).get('overall_score', 0)
@@ -593,8 +550,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
     info_items = [
         ("Agent:", agent_name),
         ("Review Date:", datetime.now().strftime('%B %d, %Y')),
-        ("Chats Analyzed:", agent_data.get('total_chats', 0)),
-        ("Review Period:", f"{agent_data.get('review_period_days', 90)} days (Quarterly)")
+        ("Chats Analyzed:", agent_data.get('total_chats', 0))
     ]
     
     for label, value in info_items:
@@ -616,30 +572,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
     score_cell.alignment = center_align
     current_row += 3
 
-        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-        current_row += 1
-        
-        # Note: I'm using the global EXPECTED_CHATS_PER_5_DAYS if available
-        try:
-            target_str = f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"
-        except NameError:
-            target_str = "Target: Standard/week"
-
-        volume_data = [
-            ['Metric', 'Value', 'Assessment'],
-        ]
-        
-        for r_idx, row_data in enumerate(volume_data):
-            for c_idx, value in enumerate(row_data, 1):
-                cell = ws.cell(row=current_row + r_idx, column=c_idx, value=value)
-                cell.border = border
-                if r_idx == 0:
-                    cell.fill, cell.font, cell.alignment = header_fill, header_font, center_align
-                else:
-                    cell.alignment = center_align if c_idx > 1 else left_align
-        current_row += len(volume_data) + 1
-
-    # --- SECTION 4: PERFORMANCE METRICS ---
+    # --- SECTION 3: PERFORMANCE METRICS ---
     metrics = agent_data.get('audit_data', {}).get('metrics', {})
     if metrics:
         ws.cell(row=current_row, column=1, value="PERFORMANCE METRICS").font = subheader_font
@@ -658,7 +591,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
             current_row += 1
         current_row += 1
 
-    # --- SECTION 5: TECHNICAL EXAMPLES ---
+    # --- SECTION 4: TECHNICAL EXAMPLES ---
     examples = agent_data.get('audit_data', {}).get('technical_examples', [])
     if examples:
         ws.cell(row=current_row, column=1, value="TECHNICAL EXAMPLES").font = subheader_font
@@ -687,7 +620,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
             current_row += 1
         current_row += 1
 
-    # --- SECTION 6: STRENGTHS & DEVELOPMENT ---
+    # --- SECTION 5: STRENGTHS & DEVELOPMENT ---
     for title, key in [("KEY STRENGTHS", "key_strengths"), ("AREAS FOR DEVELOPMENT", "key_development_areas")]:
         ws.cell(row=current_row, column=1, value=title).font = title_font
         current_row += 1
@@ -700,7 +633,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
             current_row += 1
         current_row += 1
 
-    # --- SECTION 7: SECURITY & PIN PROTOCOL ---
+    # --- SECTION 6: SECURITY & PIN PROTOCOL ---
     ws.cell(row=current_row, column=1, value="SECURITY & PIN PROTOCOL ANALYSIS").font = title_font
     current_row += 1
     pin_feedback = agent_data.get('audit_data', {}).get('pin_protocol_feedback', 'No feedback available')
@@ -708,7 +641,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
     ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row+1, end_column=4)
     current_row += 3
 
-    # --- SECTION 8: OVERALL ASSESSMENT ---
+    # --- SECTION 7: OVERALL ASSESSMENT ---
     ws.cell(row=current_row, column=1, value="OVERALL ASSESSMENT").font = title_font
     current_row += 1
     assessment = agent_data.get('audit_data', {}).get('overall_assessment', 'No assessment available')
@@ -716,7 +649,7 @@ def generate_excel_report(agent_data, agent_name, output_path):
     ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row+4, end_column=4)
     current_row += 6
 
-    # --- SECTION 9: CRITICAL INCIDENTS (Conditional) ---
+    # --- SECTION 8: CRITICAL INCIDENTS (Conditional) ---
     critical = agent_data.get('audit_data', {}).get('critical_incidents', [])
     if critical:
         ws.cell(row=current_row, column=1, value="CRITICAL INCIDENTS").font = Font(bold=True, size=16, color="DC3545")
@@ -734,6 +667,11 @@ def generate_excel_report(agent_data, agent_name, output_path):
     ws.column_dimensions['B'].width = 30
     ws.column_dimensions['C'].width = 30
     ws.column_dimensions['D'].width = 30
+    ws.column_dimensions['E'].width = 40
+    ws.column_dimensions['F'].width = 40
+    ws.column_dimensions['G'].width = 35
+    ws.column_dimensions['H'].width = 35
+    ws.column_dimensions['I'].width = 15
     
     wb.save(output_path)
     return output_path
@@ -744,26 +682,6 @@ def display_results(audit_data):
     
     # Overall Score
     score = min(float(audit_data.get('overall_score', 0)), 10.0)
-    
-    # Chat Volume Metrics
-    
-        st.markdown("### 📊 Chat Volume Performance")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-        with col2:
-        with col3:
-            st.metric("Performance", f"{perf_pct}%")
-        with col4:
-            rating_emoji = {
-                'Excellent': '🟢',
-                'Good': '🟡',
-                'Needs Improvement': '🟠',
-                'Below Standard': '🔴'
-            }.get(rating, '⚪')
-            st.metric("Rating", f"{rating_emoji} {rating}")
-        
-        st.markdown("---")
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -839,7 +757,7 @@ def display_results(audit_data):
     # Critical Incidents (if any) - show prominently
     critical = audit_data.get("critical_incidents", [])
     if critical:
-        st.markdown("###⚠️ Critical Incidents")
+        st.markdown("### ⚠️ Critical Incidents")
         for incident in critical:
             st.markdown(f"""
             <div class='critical-item'>
@@ -913,30 +831,11 @@ def display_results(audit_data):
 # --- MAIN APP FLOW ---
 def main():
     # Header
-    st.markdown("<h1 class='main-header'>🤖 HostAfrica AI Auditor - Enhanced Edition V2</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #666;'>Comprehensive Performance Analysis with AI-Powered Insights & Chat Volume Metrics</p>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-header'>🤖 HostAfrica AI Auditor - Quality Focused Edition</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #666;'>Comprehensive Quality Analysis with AI-Powered Insights</p>", unsafe_allow_html=True)
     
     # Sidebar
     st.sidebar.title("🏢 Agent Management")
-    st.sidebar.markdown("---")
-    
-    # Configuration settings
-    with st.sidebar.expander("⚙️ Review Settings"):
-        review_period = st.number_input(
-            "Review Period (days)", 
-            min_value=30, 
-            max_value=180, 
-            value=REVIEW_PERIOD_DAYS,
-            help="Default: 90 days (quarterly review)"
-        )
-        expected_weekly = st.number_input(
-            "Expected Chats per Week", 
-            min_value=20, 
-            max_value=100, 
-            value=EXPECTED_CHATS_PER_5_DAYS,
-            help="Based on 5-day work week"
-        )
-    
     st.sidebar.markdown("---")
     
     # Add new agent
@@ -946,9 +845,7 @@ def main():
     if st.sidebar.button("➕ Add Agent", use_container_width=True):
         if new_agent_name:
             if new_agent_name not in st.session_state.agents:
-                agent = get_initial_agent(new_agent_name)
-                agent['review_period_days'] = review_period
-                st.session_state.agents[new_agent_name] = agent
+                st.session_state.agents[new_agent_name] = get_initial_agent(new_agent_name)
                 st.sidebar.success(f"Added {new_agent_name}")
                 st.rerun()
             else:
@@ -963,19 +860,6 @@ def main():
     
     if not agent_list:
         st.info("👈 Please add an agent using the sidebar to begin")
-        
-        # Show performance standards
-        st.markdown("### 📊 Performance Standards")
-        st.info(f"""
-        **Quarterly Review Standards (90 days):**
-        - Expected chats per 5-day week: **{EXPECTED_CHATS_PER_5_DAYS}**
-        - Expected chats for 90-day period: **~{EXPECTED_CHATS_QUARTERLY}**
-        - Rating scale:
-          - 🟢 Excellent: 100%+ of expected
-          - 🟡 Good: 80-99% of expected
-          - 🟠 Needs Improvement: 60-79% of expected
-          - 🔴 Below Standard: <60% of expected
-        """)
         return
     
     # Select agent
@@ -1046,12 +930,7 @@ def main():
                     status_text.text("🤖 Running AI-powered comprehensive analysis...")
                     progress_bar.progress(60)
                     
-                    audit_result = run_comprehensive_audit(
-                        transcripts, 
-                        selected_agent, 
-                        len(transcripts),
-                        agent.get('review_period_days', REVIEW_PERIOD_DAYS)
-                    )
+                    audit_result = run_comprehensive_audit(transcripts, selected_agent)
                     
                     if audit_result:
                         # Update agent data
@@ -1068,26 +947,16 @@ def main():
                         
                         # Show quick summary
                         st.markdown("### Quick Summary")
-                        col1, col2, col3, col4 = st.columns(4)
+                        col1, col2, col3 = st.columns(3)
                         col1.metric("Overall Score", f"{audit_result.get('overall_score', 0)}/10")
                         col2.metric("Strengths", len(audit_result.get('key_strengths', [])))
                         col3.metric("Dev Areas", len(audit_result.get('key_development_areas', [])))
-                        
                         
                         st.info("👉 Switch to the 'Detailed Results & Export' tab to view the full report and download PDF")
                     else:
                         st.error("❌ Analysis failed. Please try again or check the error messages above.")
         else:
             st.info("📤 Please upload a ZIP file containing tawk.to chat transcripts to begin analysis")
-            
-            # Show expected standards
-            st.markdown("### 📊 Performance Standards")
-            st.info(f"""
-            For a **90-day quarterly review**, we expect:
-            - **~{EXPECTED_CHATS_QUARTERLY} total chats** (based on {EXPECTED_CHATS_PER_5_DAYS} chats per 5-day week)
-            - Consistent daily performance across the review period
-            - Quality over quantity, but volume is also measured
-            """)
     
     with tab2:
         if agent.get("audit_data"):
