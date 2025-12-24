@@ -621,16 +621,17 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     doc.build(story)
     return output_path
 
-# --- EXCEL REPORT GENERATION ---
+# --- EXCEL REPORT GENERATION (Consolidated Single-Sheet Version) ---
 def generate_excel_report(agent_data, agent_name, output_path):
-    """Generate a beautifully formatted Excel performance review report"""
+    """Generate a single-sheet Excel performance review report for easy copy-pasting"""
     
     wb = Workbook()
+    ws = wb.active
+    ws.title = "Performance Review Report"
     
     # Define styles
     header_fill = PatternFill(start_color="1F77B4", end_color="1F77B4", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF", size=12)
-    subheader_fill = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
     subheader_font = Font(bold=True, size=11)
     title_font = Font(bold=True, size=16, color="1F77B4")
     border = Border(
@@ -642,254 +643,168 @@ def generate_excel_report(agent_data, agent_name, output_path):
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left_align = Alignment(horizontal='left', vertical='top', wrap_text=True)
     
-    # --- SUMMARY SHEET ---
-    ws_summary = wb.active
-    ws_summary.title = "Summary"
+    current_row = 1
+
+    # --- SECTION 1: HEADER & AGENT INFO ---
+    ws.cell(row=current_row, column=1, value="PERFORMANCE REVIEW REPORT").font = title_font
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+    ws.cell(row=current_row, column=1).alignment = center_align
+    current_row += 2
     
-    # Title
-    ws_summary['A1'] = "PERFORMANCE REVIEW REPORT"
-    ws_summary['A1'].font = title_font
-    ws_summary.merge_cells('A1:D1')
-    ws_summary['A1'].alignment = center_align
+    info_items = [
+        ("Agent:", agent_name),
+        ("Review Date:", datetime.now().strftime('%B %d, %Y')),
+        ("Chats Analyzed:", agent_data.get('total_chats', 0)),
+        ("Review Period:", f"{agent_data.get('review_period_days', 90)} days (Quarterly)")
+    ]
     
-    # Agent Info
-    ws_summary['A3'] = "Agent:"
-    ws_summary['B3'] = agent_name
-    ws_summary['A4'] = "Review Date:"
-    ws_summary['B4'] = datetime.now().strftime('%B %d, %Y')
-    ws_summary['A5'] = "Chats Analyzed:"
-    ws_summary['B5'] = agent_data.get('total_chats', 0)
-    ws_summary['A6'] = "Review Period:"
-    ws_summary['B6'] = f"{agent_data.get('review_period_days', 90)} days (Quarterly)"
+    for label, value in info_items:
+        ws.cell(row=current_row, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=current_row, column=2, value=value)
+        current_row += 1
     
-    for cell in ['A3', 'A4', 'A5', 'A6']:
-        ws_summary[cell].font = Font(bold=True)
-    
-    # Overall Score
-    ws_summary['A8'] = "OVERALL PERFORMANCE SCORE"
-    ws_summary['A8'].font = subheader_font
-    ws_summary.merge_cells('A8:D8')
+    current_row += 1
+
+    # --- SECTION 2: OVERALL SCORE ---
+    ws.cell(row=current_row, column=1, value="OVERALL PERFORMANCE SCORE").font = subheader_font
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+    current_row += 1
     
     overall_score = agent_data.get('audit_data', {}).get('overall_score', 0)
-    ws_summary['B9'] = f"{overall_score}/10.0"
-    ws_summary['B9'].font = Font(bold=True, size=24, color="1F77B4")
-    ws_summary['B9'].alignment = center_align
-    
-    # Chat Volume Performance
+    score_cell = ws.cell(row=current_row, column=1, value=f"{overall_score}/10.0")
+    score_cell.font = Font(bold=True, size=24, color="1F77B4")
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row+1, end_column=4)
+    score_cell.alignment = center_align
+    current_row += 3
+
+    # --- SECTION 3: CHAT VOLUME PERFORMANCE ---
     volume_metrics = agent_data.get('audit_data', {}).get('volume_metrics', {})
     if volume_metrics:
-        ws_summary['A11'] = "CHAT VOLUME PERFORMANCE"
-        ws_summary['A11'].font = subheader_font
-        ws_summary.merge_cells('A11:D11')
+        ws.cell(row=current_row, column=1, value="CHAT VOLUME PERFORMANCE").font = subheader_font
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+        current_row += 1
         
-        row = 12
+        # Note: I'm using the global EXPECTED_CHATS_PER_5_DAYS if available
+        try:
+            target_str = f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"
+        except NameError:
+            target_str = "Target: Standard/week"
+
         volume_data = [
             ['Metric', 'Value', 'Assessment'],
             ['Total Chats Handled', volume_metrics.get('total_chats', 0), ''],
             ['Expected Chats (90 days)', volume_metrics.get('expected_chats', 0), ''],
             ['Performance Rate', f"{volume_metrics.get('performance_percentage', 0)}%", volume_metrics.get('rating', 'N/A')],
             ['Daily Average', volume_metrics.get('daily_average', 0), ''],
-            ['Weekly Average', volume_metrics.get('weekly_average', 0), f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"]
+            ['Weekly Average', volume_metrics.get('weekly_average', 0), target_str]
         ]
         
-        for col_idx, header in enumerate(volume_data[0], 1):
-            cell = ws_summary.cell(row=row, column=col_idx, value=header)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.border = border
-            cell.alignment = center_align
-        
-        for row_idx, row_data in enumerate(volume_data[1:], row + 1):
-            for col_idx, value in enumerate(row_data, 1):
-                cell = ws_summary.cell(row=row_idx, column=col_idx, value=value)
+        for r_idx, row_data in enumerate(volume_data):
+            for c_idx, value in enumerate(row_data, 1):
+                cell = ws.cell(row=current_row + r_idx, column=c_idx, value=value)
                 cell.border = border
-                cell.alignment = center_align if col_idx > 1 else left_align
-    
-    # Performance Metrics
+                if r_idx == 0:
+                    cell.fill, cell.font, cell.alignment = header_fill, header_font, center_align
+                else:
+                    cell.alignment = center_align if c_idx > 1 else left_align
+        current_row += len(volume_data) + 1
+
+    # --- SECTION 4: PERFORMANCE METRICS ---
     metrics = agent_data.get('audit_data', {}).get('metrics', {})
-    row = 19
-    ws_summary.cell(row=row, column=1, value="PERFORMANCE METRICS").font = subheader_font
-    ws_summary.merge_cells(f'A{row}:C{row}')
-    
-    row += 1
-    ws_summary.cell(row=row, column=1, value="Metric").fill = header_fill
-    ws_summary.cell(row=row, column=1, value="Metric").font = header_font
-    ws_summary.cell(row=row, column=2, value="Score (out of 5.0)").fill = header_fill
-    ws_summary.cell(row=row, column=2, value="Score (out of 5.0)").font = header_font
-    
-    for cell in [ws_summary.cell(row=row, column=1), ws_summary.cell(row=row, column=2)]:
-        cell.border = border
-        cell.alignment = center_align
-    
-    for key, value in metrics.items():
-        row += 1
-        metric_name = key.replace('_', ' ').title()
-        ws_summary.cell(row=row, column=1, value=metric_name).border = border
-        ws_summary.cell(row=row, column=2, value=f"{value}/5.0").border = border
-        ws_summary.cell(row=row, column=2).alignment = center_align
-    
-    # Adjust column widths
-    ws_summary.column_dimensions['A'].width = 30
-    ws_summary.column_dimensions['B'].width = 25
-    ws_summary.column_dimensions['C'].width = 25
-    ws_summary.column_dimensions['D'].width = 25
-    
-    # --- TECHNICAL EXAMPLES SHEET ---
-    ws_examples = wb.create_sheet("Technical Examples")
-    
+    if metrics:
+        ws.cell(row=current_row, column=1, value="PERFORMANCE METRICS").font = subheader_font
+        current_row += 1
+        
+        headers = ["Metric", "Score (out of 5.0)"]
+        for c_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=current_row, column=c_idx, value=h)
+            cell.fill, cell.font, cell.border, cell.alignment = header_fill, header_font, border, center_align
+        
+        current_row += 1
+        for key, value in metrics.items():
+            ws.cell(row=current_row, column=1, value=key.replace('_', ' ').title()).border = border
+            score_cell = ws.cell(row=current_row, column=2, value=f"{value}/5.0")
+            score_cell.border, score_cell.alignment = border, center_align
+            current_row += 1
+        current_row += 1
+
+    # --- SECTION 5: TECHNICAL EXAMPLES ---
     examples = agent_data.get('audit_data', {}).get('technical_examples', [])
-    
     if examples:
-        # Headers
-        headers = [
-            'Example #',
-            'Client Name',
-            'PIN Number',
-            'Issue Type',
-            'Customer Issue',
-            'Agent Action',
-            'PIN Handled Well',
-            'Outcome',
-            'Assessment',
-            'Improvement',
-            'Severity'
-        ]
+        ws.cell(row=current_row, column=1, value="TECHNICAL EXAMPLES").font = subheader_font
+        current_row += 1
         
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws_examples.cell(row=1, column=col_idx, value=header)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.border = border
-            cell.alignment = center_align
+        headers = ['#', 'Client', 'PIN', 'Issue Type', 'Customer Issue', 'Agent Action', 'Outcome', 'Assessment', 'Severity']
+        for c_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=current_row, column=c_idx, value=h)
+            cell.fill, cell.font, cell.border, cell.alignment = header_fill, header_font, border, center_align
         
-        # Data rows
-        for row_idx, example in enumerate(examples, 2):
+        current_row += 1
+        for idx, ex in enumerate(examples, 1):
             data = [
-                example.get('example_number', row_idx - 1),
-                example.get('client_name', 'N/A'),
-                example.get('pin_number', 'N/A'),
-                example.get('issue_type', 'N/A'),
-                example.get('customer_issue', 'N/A'),
-                example.get('agent_action', 'N/A'),
-                example.get('pin_handled_well', 'N/A'),
-                example.get('outcome', 'N/A'),
-                example.get('assessment', 'N/A'),
-                example.get('improvement', 'N/A'),
-                example.get('severity', 'N/A')
+                ex.get('example_number', idx), ex.get('client_name', 'N/A'), ex.get('pin_number', 'N/A'),
+                ex.get('issue_type', 'N/A'), ex.get('customer_issue', 'N/A'), ex.get('agent_action', 'N/A'),
+                ex.get('outcome', 'N/A'), ex.get('assessment', 'N/A'), ex.get('severity', 'N/A')
             ]
-            
-            for col_idx, value in enumerate(data, 1):
-                cell = ws_examples.cell(row=row_idx, column=col_idx, value=value)
-                cell.border = border
-                cell.alignment = left_align
-                
-                # Color code severity
-                if col_idx == 11:  # Severity column
-                    if value == 'Critical':
-                        cell.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
-                    elif value == 'Major':
-                        cell.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
-                    elif value == 'Moderate':
-                        cell.fill = PatternFill(start_color="D1ECF1", end_color="D1ECF1", fill_type="solid")
-                    elif value == 'Minor':
-                        cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
-        
-        # Adjust column widths
-        ws_examples.column_dimensions['A'].width = 12
-        ws_examples.column_dimensions['B'].width = 20
-        ws_examples.column_dimensions['C'].width = 15
-        ws_examples.column_dimensions['D'].width = 20
-        ws_examples.column_dimensions['E'].width = 40
-        ws_examples.column_dimensions['F'].width = 40
-        ws_examples.column_dimensions['G'].width = 18
-        ws_examples.column_dimensions['H'].width = 35
-        ws_examples.column_dimensions['I'].width = 35
-        ws_examples.column_dimensions['J'].width = 35
-        ws_examples.column_dimensions['K'].width = 15
-        
-        # Freeze top row
-        ws_examples.freeze_panes = 'A2'
-    
-    # --- STRENGTHS & DEVELOPMENT SHEET ---
-    ws_feedback = wb.create_sheet("Strengths & Development")
-    
-    # Strengths
-    ws_feedback['A1'] = "KEY STRENGTHS"
-    ws_feedback['A1'].font = title_font
-    ws_feedback.merge_cells('A1:B1')
-    
-    strengths = agent_data.get('audit_data', {}).get('key_strengths', [])
-    row = 2
-    for i, strength in enumerate(strengths, 1):
-        ws_feedback.cell(row=row, column=1, value=f"{i}.")
-        ws_feedback.cell(row=row, column=2, value=strength).alignment = left_align
-        ws_feedback.cell(row=row, column=2).border = border
-        row += 1
-    
-    # Development Areas
-    row += 2
-    ws_feedback.cell(row=row, column=1, value="AREAS FOR DEVELOPMENT").font = title_font
-    ws_feedback.merge_cells(f'A{row}:B{row}')
-    
-    dev_areas = agent_data.get('audit_data', {}).get('key_development_areas', [])
-    row += 1
-    for i, area in enumerate(dev_areas, 1):
-        ws_feedback.cell(row=row, column=1, value=f"{i}.")
-        ws_feedback.cell(row=row, column=2, value=area).alignment = left_align
-        ws_feedback.cell(row=row, column=2).border = border
-        row += 1
-    
-    # PIN Protocol Feedback
-    row += 2
-    ws_feedback.cell(row=row, column=1, value="SECURITY & PIN PROTOCOL ANALYSIS").font = title_font
-    ws_feedback.merge_cells(f'A{row}:B{row}')
-    
-    row += 1
+            for c_idx, value in enumerate(data, 1):
+                cell = ws.cell(row=current_row, column=c_idx, value=value)
+                cell.border, cell.alignment = border, left_align
+                # Severity Coloring
+                if c_idx == 9: 
+                    sev_colors = {'Critical': "F8D7DA", 'Major': "FFF3CD", 'Moderate': "D1ECF1", 'Minor': "D4EDDA"}
+                    if value in sev_colors:
+                        cell.fill = PatternFill(start_color=sev_colors[value], end_color=sev_colors[value], fill_type="solid")
+            current_row += 1
+        current_row += 1
+
+    # --- SECTION 6: STRENGTHS & DEVELOPMENT ---
+    for title, key in [("KEY STRENGTHS", "key_strengths"), ("AREAS FOR DEVELOPMENT", "key_development_areas")]:
+        ws.cell(row=current_row, column=1, value=title).font = title_font
+        current_row += 1
+        items = agent_data.get('audit_data', {}).get(key, [])
+        for i, item in enumerate(items, 1):
+            ws.cell(row=current_row, column=1, value=f"{i}.")
+            content_cell = ws.cell(row=current_row, column=2, value=item)
+            content_cell.alignment, content_cell.border = left_align, border
+            ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
+            current_row += 1
+        current_row += 1
+
+    # --- SECTION 7: SECURITY & PIN PROTOCOL ---
+    ws.cell(row=current_row, column=1, value="SECURITY & PIN PROTOCOL ANALYSIS").font = title_font
+    current_row += 1
     pin_feedback = agent_data.get('audit_data', {}).get('pin_protocol_feedback', 'No feedback available')
-    ws_feedback.cell(row=row, column=1, value=pin_feedback).alignment = left_align
-    ws_feedback.merge_cells(f'A{row}:B{row}')
-    ws_feedback.cell(row=row, column=1).border = border
-    
-    # Adjust column widths
-    ws_feedback.column_dimensions['A'].width = 5
-    ws_feedback.column_dimensions['B'].width = 100
-    
-    # --- OVERALL ASSESSMENT SHEET ---
-    ws_assessment = wb.create_sheet("Overall Assessment")
-    
-    ws_assessment['A1'] = "OVERALL ASSESSMENT"
-    ws_assessment['A1'].font = title_font
-    ws_assessment.merge_cells('A1:B1')
-    
+    ws.cell(row=current_row, column=1, value=pin_feedback).alignment = left_align
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row+1, end_column=4)
+    current_row += 3
+
+    # --- SECTION 8: OVERALL ASSESSMENT ---
+    ws.cell(row=current_row, column=1, value="OVERALL ASSESSMENT").font = title_font
+    current_row += 1
     assessment = agent_data.get('audit_data', {}).get('overall_assessment', 'No assessment available')
-    ws_assessment['A3'] = assessment
-    ws_assessment['A3'].alignment = left_align
-    ws_assessment.merge_cells('A3:B3')
-    
-    ws_assessment.column_dimensions['A'].width = 100
-    
-    # --- CRITICAL INCIDENTS SHEET (if any) ---
+    ws.cell(row=current_row, column=1, value=assessment).alignment = left_align
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row+4, end_column=4)
+    current_row += 6
+
+    # --- SECTION 9: CRITICAL INCIDENTS (Conditional) ---
     critical = agent_data.get('audit_data', {}).get('critical_incidents', [])
     if critical:
-        ws_critical = wb.create_sheet("Critical Incidents")
-        
-        ws_critical['A1'] = "CRITICAL INCIDENTS"
-        ws_critical['A1'].font = Font(bold=True, size=16, color="DC3545")
-        ws_critical.merge_cells('A1:B1')
-        
-        row = 2
+        ws.cell(row=current_row, column=1, value="CRITICAL INCIDENTS").font = Font(bold=True, size=16, color="DC3545")
+        current_row += 1
         for i, incident in enumerate(critical, 1):
-            ws_critical.cell(row=row, column=1, value=f"{i}.")
-            cell = ws_critical.cell(row=row, column=2, value=incident)
-            cell.alignment = left_align
-            cell.border = border
+            ws.cell(row=current_row, column=1, value=f"{i}.")
+            cell = ws.cell(row=current_row, column=2, value=incident)
+            cell.alignment, cell.border = left_align, border
             cell.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
-            row += 1
-        
-        ws_critical.column_dimensions['A'].width = 5
-        ws_critical.column_dimensions['B'].width = 100
+            ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
+            current_row += 1
+
+    # Final adjustments
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 30
+    ws.column_dimensions['C'].width = 30
+    ws.column_dimensions['D'].width = 30
     
-    # Save workbook
     wb.save(output_path)
     return output_path
 
