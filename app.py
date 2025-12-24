@@ -5,7 +5,7 @@ import os
 import google.generativeai as genai
 import json
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -13,10 +13,14 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from reportlab.pdfgen import canvas
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.utils import get_column_letter
 
 # --- CONFIGURATION ---
 st.set_page_config(
-    page_title="HostAfrica AI Auditor - Enhanced Security Edition", 
+    page_title="HostAfrica AI Auditor - Enhanced Security Edition V2", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -51,6 +55,13 @@ st.markdown("""
         border-radius: 0.3rem;
         border-left: 3px solid #ffc107;
     }
+    .critical-item {
+        background-color: #f8d7da;
+        padding: 0.5rem;
+        margin: 0.3rem 0;
+        border-radius: 0.3rem;
+        border-left: 3px solid #dc3545;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,7 +69,15 @@ st.markdown("""
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # Using gemini-1.5-flash for better free tier availability
+    model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- PERFORMANCE STANDARDS ---
+EXPECTED_CHATS_PER_5_DAYS = 40  # Baseline for 5-day work week
+REVIEW_PERIOD_DAYS = 90  # Quarterly review
+WORKDAYS_PER_WEEK = 5
+WEEKS_IN_REVIEW_PERIOD = REVIEW_PERIOD_DAYS / 7
+EXPECTED_CHATS_QUARTERLY = int((WEEKS_IN_REVIEW_PERIOD * WORKDAYS_PER_WEEK / 5) * EXPECTED_CHATS_PER_5_DAYS)
 
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
@@ -70,7 +89,48 @@ def get_initial_agent(name=""):
         "audit_data": None,
         "total_chats": 0,
         "audit_timestamp": None,
-        "raw_transcripts": []
+        "raw_transcripts": [],
+        "review_period_days": REVIEW_PERIOD_DAYS,
+        "chat_dates": []
+    }
+
+# --- CHAT VOLUME ANALYSIS ---
+def calculate_chat_volume_metrics(total_chats, review_period_days=90):
+    """Calculate chat volume performance metrics"""
+    
+    # Expected chats for the review period
+    expected_chats = EXPECTED_CHATS_QUARTERLY
+    
+    # Calculate performance percentage
+    performance_percentage = (total_chats / expected_chats) * 100 if expected_chats > 0 else 0
+    
+    # Determine performance rating
+    if performance_percentage >= 100:
+        rating = "Excellent"
+        color = "success"
+    elif performance_percentage >= 80:
+        rating = "Good"
+        color = "info"
+    elif performance_percentage >= 60:
+        rating = "Needs Improvement"
+        color = "warning"
+    else:
+        rating = "Below Standard"
+        color = "error"
+    
+    # Calculate daily average
+    daily_average = total_chats / review_period_days if review_period_days > 0 else 0
+    weekly_average = daily_average * WORKDAYS_PER_WEEK
+    
+    return {
+        "total_chats": total_chats,
+        "expected_chats": expected_chats,
+        "performance_percentage": round(performance_percentage, 1),
+        "rating": rating,
+        "color": color,
+        "daily_average": round(daily_average, 1),
+        "weekly_average": round(weekly_average, 1),
+        "review_period_days": review_period_days
     }
 
 # --- RECURSIVE ZIP PROCESSING ---
@@ -119,8 +179,11 @@ def get_agent_transcripts(uploaded_zip, target_name):
     return transcripts, chat_metadata
 
 # --- ENHANCED AI AUDIT LOGIC ---
-def run_comprehensive_audit(transcripts, agent_name):
+def run_comprehensive_audit(transcripts, agent_name, total_chats, review_period_days):
     """Run comprehensive AI-powered audit with detailed analysis"""
+    
+    # Calculate chat volume metrics
+    volume_metrics = calculate_chat_volume_metrics(total_chats, review_period_days)
     
     # Use up to 50 transcripts for comprehensive analysis
     sample_size = min(50, len(transcripts))
@@ -130,11 +193,18 @@ def run_comprehensive_audit(transcripts, agent_name):
 You are a Senior Technical QA Auditor at HostAfrica with 10+ years of experience evaluating technical support quality.
 You are conducting a comprehensive performance review of agent: {agent_name}
 
+REVIEW CONTEXT:
+- Total chats analyzed: {total_chats}
+- Review period: {review_period_days} days (quarterly review)
+- Expected chats for this period: {volume_metrics['expected_chats']}
+- Chat volume performance: {volume_metrics['performance_percentage']}% ({volume_metrics['rating']})
+
 CRITICAL INSTRUCTIONS:
 1. Analyze ONLY the agent's performance, NOT bots or automated messages
 2. Focus on REAL examples from the actual chat transcripts provided
 3. All scores must use the correct scale as specified
 4. Provide actionable, specific feedback based on actual chat evidence
+5. Pay special attention to PIN verification protocol - this is a critical security measure
 
 SCORING SCALES:
 - Individual metrics: 0.0 to 5.0 (where 5.0 is exceptional)
@@ -143,36 +213,43 @@ SCORING SCALES:
 EVALUATION FRAMEWORK (Weighted):
 
 1. SECURITY & PIN VERIFICATION PROTOCOL (Weight: 20%)
-   - Did agent request PIN when required (before accessing account details)?
-   - Did agent avoid redundant PIN requests (not asking for already-provided PIN)?
+   CRITICAL FOCUS AREAS:
+   - Did agent request PIN when initiating new chats OR when taking over from bot?
+   - Did agent avoid redundant PIN requests (not asking for already-provided PIN in SAME session)?
    - Did agent follow proper security procedures consistently?
-   - Rate: 0.0-5.0
+   - IMPORTANT: In transferred chats, agent MUST re-verify PIN in their own session before account actions
+   - Flag any instances where account modifications were made without explicit PIN verification
+   Rate: 0.0-5.0
 
 2. TECHNICAL CAPABILITY & ACCURACY (Weight: 25%)
    - Accuracy in diagnosing DNS, Email, SSL, WordPress, hosting issues
    - Proper use of diagnostic tools (Ping, Traceroute, WHOIS, cPanel)
    - Correctness of technical solutions provided
-   - Rate: 0.0-5.0
+   - Depth of technical knowledge demonstrated
+   Rate: 0.0-5.0
 
 3. COMMUNICATION & PROFESSIONALISM (Weight: 15%)
    - Clarity and professionalism in communication
-   - Empathy and patience with customers
+   - Empathy and patience with customers (especially frustrated ones)
    - Grammar, spelling, and tone appropriateness
-   - Rate: 0.0-5.0
+   - De-escalation techniques for difficult situations
+   Rate: 0.0-5.0
 
 4. INVESTIGATIVE & PROBLEM-SOLVING APPROACH (Weight: 20%)
    - Systematic troubleshooting methodology
    - Asking relevant diagnostic questions
    - Root cause analysis capability
    - Thoroughness in investigation
-   - Rate: 0.0-5.0
+   - Proactive information gathering
+   Rate: 0.0-5.0
 
 5. CHAT OWNERSHIP & RESOLUTION (Weight: 20%)
    - Taking full ownership of issues
    - Following through to resolution
    - Proactive communication and updates
    - Proper escalation when needed
-   - Rate: 0.0-5.0
+   - Ensuring customer satisfaction
+   Rate: 0.0-5.0
 
 OUTPUT REQUIREMENTS:
 Provide exactly 20 detailed technical examples from the actual transcripts. Each example must:
@@ -180,11 +257,18 @@ Provide exactly 20 detailed technical examples from the actual transcripts. Each
 - Show the ACTUAL agent action/response
 - Include specific improvement recommendations
 - Indicate PIN handling quality (Yes/No/Redundant/N/A)
+- Classify severity (Minor/Moderate/Major/Critical)
+
+IMPORTANT: For PIN verification:
+- "Yes" = Agent properly requested/verified PIN before account actions
+- "No" = Agent performed account actions WITHOUT proper PIN verification (SECURITY RISK)
+- "Redundant" = Agent asked for PIN that was already provided in same session
+- "N/A" = No account access required (e.g., general questions, pre-sales)
 
 Return ONLY valid JSON in this exact structure:
 {{
     "overall_score": 0.0,
-    "overall_assessment": "Comprehensive 3-4 paragraph summary of agent's performance, highlighting key patterns observed across all interactions",
+    "overall_assessment": "Comprehensive 3-4 paragraph summary of agent's performance, highlighting key patterns observed across all interactions. Include commentary on chat volume performance.",
     "metrics": {{
         "security_pin_protocol": 0.0,
         "technical_capability": 0.0,
@@ -193,11 +277,11 @@ Return ONLY valid JSON in this exact structure:
         "chat_ownership_resolution": 0.0
     }},
     "key_strengths": [
-        "Specific strength with example",
-        "Specific strength with example",
-        "Specific strength with example",
-        "Specific strength with example",
-        "Specific strength with example"
+        "Specific strength with example from chats",
+        "Specific strength with example from chats",
+        "Specific strength with example from chats",
+        "Specific strength with example from chats",
+        "Specific strength with example from chats"
     ],
     "key_development_areas": [
         "Specific area for improvement with actionable advice",
@@ -206,45 +290,51 @@ Return ONLY valid JSON in this exact structure:
         "Specific area for improvement with actionable advice",
         "Specific area for improvement with actionable advice"
     ],
-    "pin_protocol_feedback": "Detailed analysis of PIN verification practices: when PIN was requested, any redundant requests, security protocol adherence, specific examples of good/poor PIN handling",
+    "pin_protocol_feedback": "DETAILED analysis of PIN verification practices across all chats. Specifically note: (1) How many chats had proper PIN verification, (2) How many had PIN bypasses, (3) Pattern analysis - does agent verify in new chats but skip in transferred chats?, (4) Specific examples of good and poor PIN handling, (5) Security risk assessment",
     "technical_examples": [
         {{
             "example_number": 1,
-            "issue_type": "DNS/Email/SSL/WordPress/etc",
-            "customer_issue": "Specific customer complaint or issue",
-            "agent_action": "Detailed description of what agent did",
+            "client_name": "Customer's name from the chat (e.g., 'John Doe', 'Sarah Smith')",
+            "pin_number": "PIN number if mentioned in chat (e.g., '1234', 'Not provided', 'N/A')",
+            "issue_type": "VPS/Server, Domain/WHOIS, DNS, Email, SSL, WordPress, cPanel, Billing, etc.",
+            "customer_issue": "Specific detailed customer complaint or issue",
+            "agent_action": "Detailed description of what agent actually did or said",
             "pin_handled_well": "Yes/No/Redundant/N/A",
-            "outcome": "What happened as a result",
-            "assessment": "Was this handled well or poorly?",
-            "improvement": "Specific actionable improvement suggestion",
+            "outcome": "What happened as a result of agent's action",
+            "assessment": "Critical evaluation - was this handled well or poorly? Why?",
+            "improvement": "Specific actionable improvement suggestion or 'None' if handled perfectly",
             "severity": "Minor/Moderate/Major/Critical"
         }},
-        ... (continue for all 20 examples)
+        {{
+            "example_number": 2,
+            ... (continue for 20 examples total)
+        }}
     ],
     "performance_trends": {{
-        "response_time_assessment": "Analysis of agent's response speed",
-        "consistency": "How consistent is the agent's performance",
-        "technical_depth": "Assessment of technical knowledge depth",
-        "customer_satisfaction_indicators": "Signs of customer satisfaction or frustration"
+        "response_time_assessment": "Analysis of agent's response speed and communication timing",
+        "consistency": "How consistent is the agent's performance across different issue types",
+        "technical_depth": "Assessment of technical knowledge depth and problem-solving capability",
+        "customer_satisfaction_indicators": "Signs of customer satisfaction or frustration based on chat outcomes"
     }},
     "recommended_training": [
-        "Specific training recommendation based on identified gaps",
+        "Specific training recommendation based on identified gaps (minimum 3)",
         "Specific training recommendation based on identified gaps",
         "Specific training recommendation based on identified gaps"
     ],
     "standout_moments": [
-        "Exceptional handling example",
-        "Exceptional handling example"
+        "Exceptional handling example with specific details from chats",
+        "Exceptional handling example with specific details from chats"
     ],
     "critical_incidents": [
-        "Any critical errors or serious issues"
-    ]
+        "Any critical errors, serious security lapses, or major issues (be specific)"
+    ],
+    "chat_volume_commentary": "Brief commentary on the agent's chat volume performance relative to expectations. Total: {total_chats}, Expected: {volume_metrics['expected_chats']}, Performance: {volume_metrics['rating']}"
 }}
 
 CHAT TRANSCRIPTS TO ANALYZE:
 {sample}
 
-Remember: Base ALL examples and assessments on the ACTUAL transcripts provided above. Be specific, fair, and constructive.
+Remember: Base ALL examples and assessments on the ACTUAL transcripts provided above. Be specific, fair, and constructive. Focus heavily on PIN verification protocol as this is a critical security concern for HostAfrica.
 """
     
     try:
@@ -265,6 +355,9 @@ Remember: Base ALL examples and assessments on the ACTUAL transcripts provided a
         for key in audit_result.get('metrics', {}):
             audit_result['metrics'][key] = min(float(audit_result['metrics'][key]), 5.0)
         
+        # Add volume metrics to audit result
+        audit_result['volume_metrics'] = volume_metrics
+        
         return audit_result
         
     except json.JSONDecodeError as e:
@@ -275,7 +368,7 @@ Remember: Base ALL examples and assessments on the ACTUAL transcripts provided a
         st.error(f"AI Generation Error: {e}")
         return None
 
-# --- PDF REPORT GENERATION ---
+# --- ENHANCED PDF REPORT GENERATION ---
 def generate_pdf_report(agent_data, agent_name, output_path):
     """Generate a comprehensive PDF performance review report"""
     
@@ -330,18 +423,60 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     # Build story
     story = []
     
+    # Get volume metrics
+    volume_metrics = agent_data.get('audit_data', {}).get('volume_metrics', {})
+    
     # Title
     story.append(Paragraph("PERFORMANCE REVIEW REPORT", title_style))
     story.append(Paragraph(f"<b>Agent:</b> {agent_name}", styles['Normal']))
     story.append(Paragraph(f"<b>Review Date:</b> {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Paragraph(f"<b>Chats Analyzed:</b> {agent_data.get('total_chats', 0)}", styles['Normal']))
+    story.append(Paragraph(f"<b>Review Period:</b> {agent_data.get('review_period_days', 90)} days (Quarterly)", styles['Normal']))
     story.append(Spacer(1, 0.3*inch))
+    
+    # Chat Volume Performance Section
+    if volume_metrics:
+        story.append(Paragraph("CHAT VOLUME PERFORMANCE", heading1_style))
+        
+        volume_data = [
+            ['Metric', 'Value', 'Assessment'],
+            ['Total Chats Handled', str(volume_metrics.get('total_chats', 0)), ''],
+            ['Expected Chats (90 days)', str(volume_metrics.get('expected_chats', 0)), ''],
+            ['Performance Rate', f"{volume_metrics.get('performance_percentage', 0)}%", volume_metrics.get('rating', 'N/A')],
+            ['Daily Average', f"{volume_metrics.get('daily_average', 0)}", ''],
+            ['Weekly Average', f"{volume_metrics.get('weekly_average', 0)}", f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"]
+        ]
+        
+        volume_table = Table(volume_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
+        
+        # Color code based on performance
+        rating_color = colors.HexColor('#28a745')  # Green
+        if volume_metrics.get('rating') == 'Needs Improvement':
+            rating_color = colors.HexColor('#ffc107')  # Yellow
+        elif volume_metrics.get('rating') == 'Below Standard':
+            rating_color = colors.HexColor('#dc3545')  # Red
+        
+        volume_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f0f0')]),
+            ('BACKGROUND', (2, 3), (2, 3), rating_color),
+            ('TEXTCOLOR', (2, 3), (2, 3), colors.white)
+        ]))
+        story.append(volume_table)
+        story.append(Spacer(1, 0.3*inch))
     
     # Overall Score
     overall_score = agent_data.get('audit_data', {}).get('overall_score', 0)
     story.append(Paragraph("OVERALL PERFORMANCE SCORE", heading1_style))
     
-    # Score table
     score_data = [[f"{overall_score}/10.0"]]
     score_table = Table(score_data, colWidths=[2*inch])
     score_table.setStyle(TableStyle([
@@ -421,6 +556,8 @@ def generate_pdf_report(agent_data, agent_name, output_path):
         story.append(Paragraph(f"<b>Example {i}: {example.get('issue_type', 'N/A')}</b>", heading2_style))
         
         example_data = [
+            ['Client Name:', example.get('client_name', 'N/A')],
+            ['PIN Number:', example.get('pin_number', 'N/A')],
             ['Customer Issue:', example.get('customer_issue', 'N/A')],
             ['Agent Action:', example.get('agent_action', 'N/A')],
             ['PIN Handled Well:', example.get('pin_handled_well', 'N/A')],
@@ -484,12 +621,310 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     doc.build(story)
     return output_path
 
+# --- EXCEL REPORT GENERATION ---
+def generate_excel_report(agent_data, agent_name, output_path):
+    """Generate a beautifully formatted Excel performance review report"""
+    
+    wb = Workbook()
+    
+    # Define styles
+    header_fill = PatternFill(start_color="1F77B4", end_color="1F77B4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    subheader_fill = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
+    subheader_font = Font(bold=True, size=11)
+    title_font = Font(bold=True, size=16, color="1F77B4")
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_align = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    
+    # --- SUMMARY SHEET ---
+    ws_summary = wb.active
+    ws_summary.title = "Summary"
+    
+    # Title
+    ws_summary['A1'] = "PERFORMANCE REVIEW REPORT"
+    ws_summary['A1'].font = title_font
+    ws_summary.merge_cells('A1:D1')
+    ws_summary['A1'].alignment = center_align
+    
+    # Agent Info
+    ws_summary['A3'] = "Agent:"
+    ws_summary['B3'] = agent_name
+    ws_summary['A4'] = "Review Date:"
+    ws_summary['B4'] = datetime.now().strftime('%B %d, %Y')
+    ws_summary['A5'] = "Chats Analyzed:"
+    ws_summary['B5'] = agent_data.get('total_chats', 0)
+    ws_summary['A6'] = "Review Period:"
+    ws_summary['B6'] = f"{agent_data.get('review_period_days', 90)} days (Quarterly)"
+    
+    for cell in ['A3', 'A4', 'A5', 'A6']:
+        ws_summary[cell].font = Font(bold=True)
+    
+    # Overall Score
+    ws_summary['A8'] = "OVERALL PERFORMANCE SCORE"
+    ws_summary['A8'].font = subheader_font
+    ws_summary.merge_cells('A8:D8')
+    
+    overall_score = agent_data.get('audit_data', {}).get('overall_score', 0)
+    ws_summary['B9'] = f"{overall_score}/10.0"
+    ws_summary['B9'].font = Font(bold=True, size=24, color="1F77B4")
+    ws_summary['B9'].alignment = center_align
+    
+    # Chat Volume Performance
+    volume_metrics = agent_data.get('audit_data', {}).get('volume_metrics', {})
+    if volume_metrics:
+        ws_summary['A11'] = "CHAT VOLUME PERFORMANCE"
+        ws_summary['A11'].font = subheader_font
+        ws_summary.merge_cells('A11:D11')
+        
+        row = 12
+        volume_data = [
+            ['Metric', 'Value', 'Assessment'],
+            ['Total Chats Handled', volume_metrics.get('total_chats', 0), ''],
+            ['Expected Chats (90 days)', volume_metrics.get('expected_chats', 0), ''],
+            ['Performance Rate', f"{volume_metrics.get('performance_percentage', 0)}%", volume_metrics.get('rating', 'N/A')],
+            ['Daily Average', volume_metrics.get('daily_average', 0), ''],
+            ['Weekly Average', volume_metrics.get('weekly_average', 0), f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"]
+        ]
+        
+        for col_idx, header in enumerate(volume_data[0], 1):
+            cell = ws_summary.cell(row=row, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = border
+            cell.alignment = center_align
+        
+        for row_idx, row_data in enumerate(volume_data[1:], row + 1):
+            for col_idx, value in enumerate(row_data, 1):
+                cell = ws_summary.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = border
+                cell.alignment = center_align if col_idx > 1 else left_align
+    
+    # Performance Metrics
+    metrics = agent_data.get('audit_data', {}).get('metrics', {})
+    row = 19
+    ws_summary.cell(row=row, column=1, value="PERFORMANCE METRICS").font = subheader_font
+    ws_summary.merge_cells(f'A{row}:C{row}')
+    
+    row += 1
+    ws_summary.cell(row=row, column=1, value="Metric").fill = header_fill
+    ws_summary.cell(row=row, column=1, value="Metric").font = header_font
+    ws_summary.cell(row=row, column=2, value="Score (out of 5.0)").fill = header_fill
+    ws_summary.cell(row=row, column=2, value="Score (out of 5.0)").font = header_font
+    
+    for cell in [ws_summary.cell(row=row, column=1), ws_summary.cell(row=row, column=2)]:
+        cell.border = border
+        cell.alignment = center_align
+    
+    for key, value in metrics.items():
+        row += 1
+        metric_name = key.replace('_', ' ').title()
+        ws_summary.cell(row=row, column=1, value=metric_name).border = border
+        ws_summary.cell(row=row, column=2, value=f"{value}/5.0").border = border
+        ws_summary.cell(row=row, column=2).alignment = center_align
+    
+    # Adjust column widths
+    ws_summary.column_dimensions['A'].width = 30
+    ws_summary.column_dimensions['B'].width = 25
+    ws_summary.column_dimensions['C'].width = 25
+    ws_summary.column_dimensions['D'].width = 25
+    
+    # --- TECHNICAL EXAMPLES SHEET ---
+    ws_examples = wb.create_sheet("Technical Examples")
+    
+    examples = agent_data.get('audit_data', {}).get('technical_examples', [])
+    
+    if examples:
+        # Headers
+        headers = [
+            'Example #',
+            'Client Name',
+            'PIN Number',
+            'Issue Type',
+            'Customer Issue',
+            'Agent Action',
+            'PIN Handled Well',
+            'Outcome',
+            'Assessment',
+            'Improvement',
+            'Severity'
+        ]
+        
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws_examples.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = border
+            cell.alignment = center_align
+        
+        # Data rows
+        for row_idx, example in enumerate(examples, 2):
+            data = [
+                example.get('example_number', row_idx - 1),
+                example.get('client_name', 'N/A'),
+                example.get('pin_number', 'N/A'),
+                example.get('issue_type', 'N/A'),
+                example.get('customer_issue', 'N/A'),
+                example.get('agent_action', 'N/A'),
+                example.get('pin_handled_well', 'N/A'),
+                example.get('outcome', 'N/A'),
+                example.get('assessment', 'N/A'),
+                example.get('improvement', 'N/A'),
+                example.get('severity', 'N/A')
+            ]
+            
+            for col_idx, value in enumerate(data, 1):
+                cell = ws_examples.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = border
+                cell.alignment = left_align
+                
+                # Color code severity
+                if col_idx == 11:  # Severity column
+                    if value == 'Critical':
+                        cell.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
+                    elif value == 'Major':
+                        cell.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+                    elif value == 'Moderate':
+                        cell.fill = PatternFill(start_color="D1ECF1", end_color="D1ECF1", fill_type="solid")
+                    elif value == 'Minor':
+                        cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+        
+        # Adjust column widths
+        ws_examples.column_dimensions['A'].width = 12
+        ws_examples.column_dimensions['B'].width = 20
+        ws_examples.column_dimensions['C'].width = 15
+        ws_examples.column_dimensions['D'].width = 20
+        ws_examples.column_dimensions['E'].width = 40
+        ws_examples.column_dimensions['F'].width = 40
+        ws_examples.column_dimensions['G'].width = 18
+        ws_examples.column_dimensions['H'].width = 35
+        ws_examples.column_dimensions['I'].width = 35
+        ws_examples.column_dimensions['J'].width = 35
+        ws_examples.column_dimensions['K'].width = 15
+        
+        # Freeze top row
+        ws_examples.freeze_panes = 'A2'
+    
+    # --- STRENGTHS & DEVELOPMENT SHEET ---
+    ws_feedback = wb.create_sheet("Strengths & Development")
+    
+    # Strengths
+    ws_feedback['A1'] = "KEY STRENGTHS"
+    ws_feedback['A1'].font = title_font
+    ws_feedback.merge_cells('A1:B1')
+    
+    strengths = agent_data.get('audit_data', {}).get('key_strengths', [])
+    row = 2
+    for i, strength in enumerate(strengths, 1):
+        ws_feedback.cell(row=row, column=1, value=f"{i}.")
+        ws_feedback.cell(row=row, column=2, value=strength).alignment = left_align
+        ws_feedback.cell(row=row, column=2).border = border
+        row += 1
+    
+    # Development Areas
+    row += 2
+    ws_feedback.cell(row=row, column=1, value="AREAS FOR DEVELOPMENT").font = title_font
+    ws_feedback.merge_cells(f'A{row}:B{row}')
+    
+    dev_areas = agent_data.get('audit_data', {}).get('key_development_areas', [])
+    row += 1
+    for i, area in enumerate(dev_areas, 1):
+        ws_feedback.cell(row=row, column=1, value=f"{i}.")
+        ws_feedback.cell(row=row, column=2, value=area).alignment = left_align
+        ws_feedback.cell(row=row, column=2).border = border
+        row += 1
+    
+    # PIN Protocol Feedback
+    row += 2
+    ws_feedback.cell(row=row, column=1, value="SECURITY & PIN PROTOCOL ANALYSIS").font = title_font
+    ws_feedback.merge_cells(f'A{row}:B{row}')
+    
+    row += 1
+    pin_feedback = agent_data.get('audit_data', {}).get('pin_protocol_feedback', 'No feedback available')
+    ws_feedback.cell(row=row, column=1, value=pin_feedback).alignment = left_align
+    ws_feedback.merge_cells(f'A{row}:B{row}')
+    ws_feedback.cell(row=row, column=1).border = border
+    
+    # Adjust column widths
+    ws_feedback.column_dimensions['A'].width = 5
+    ws_feedback.column_dimensions['B'].width = 100
+    
+    # --- OVERALL ASSESSMENT SHEET ---
+    ws_assessment = wb.create_sheet("Overall Assessment")
+    
+    ws_assessment['A1'] = "OVERALL ASSESSMENT"
+    ws_assessment['A1'].font = title_font
+    ws_assessment.merge_cells('A1:B1')
+    
+    assessment = agent_data.get('audit_data', {}).get('overall_assessment', 'No assessment available')
+    ws_assessment['A3'] = assessment
+    ws_assessment['A3'].alignment = left_align
+    ws_assessment.merge_cells('A3:B3')
+    
+    ws_assessment.column_dimensions['A'].width = 100
+    
+    # --- CRITICAL INCIDENTS SHEET (if any) ---
+    critical = agent_data.get('audit_data', {}).get('critical_incidents', [])
+    if critical:
+        ws_critical = wb.create_sheet("Critical Incidents")
+        
+        ws_critical['A1'] = "CRITICAL INCIDENTS"
+        ws_critical['A1'].font = Font(bold=True, size=16, color="DC3545")
+        ws_critical.merge_cells('A1:B1')
+        
+        row = 2
+        for i, incident in enumerate(critical, 1):
+            ws_critical.cell(row=row, column=1, value=f"{i}.")
+            cell = ws_critical.cell(row=row, column=2, value=incident)
+            cell.alignment = left_align
+            cell.border = border
+            cell.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
+            row += 1
+        
+        ws_critical.column_dimensions['A'].width = 5
+        ws_critical.column_dimensions['B'].width = 100
+    
+    # Save workbook
+    wb.save(output_path)
+    return output_path
+
 # --- UI DISPLAY ---
 def display_results(audit_data):
     """Display audit results in the Streamlit UI"""
     
     # Overall Score
     score = min(float(audit_data.get('overall_score', 0)), 10.0)
+    
+    # Chat Volume Metrics
+    volume_metrics = audit_data.get('volume_metrics', {})
+    
+    if volume_metrics:
+        st.markdown("### 📊 Chat Volume Performance")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Chats", volume_metrics.get('total_chats', 0))
+        with col2:
+            st.metric("Expected (90 days)", volume_metrics.get('expected_chats', 0))
+        with col3:
+            perf_pct = volume_metrics.get('performance_percentage', 0)
+            st.metric("Performance", f"{perf_pct}%")
+        with col4:
+            rating = volume_metrics.get('rating', 'N/A')
+            rating_emoji = {
+                'Excellent': '🟢',
+                'Good': '🟡',
+                'Needs Improvement': '🟠',
+                'Below Standard': '🔴'
+            }.get(rating, '⚪')
+            st.metric("Rating", f"{rating_emoji} {rating}")
+        
+        st.markdown("---")
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -562,6 +997,18 @@ def display_results(audit_data):
     
     st.markdown("---")
     
+    # Critical Incidents (if any) - show prominently
+    critical = audit_data.get("critical_incidents", [])
+    if critical:
+        st.markdown("### ⚠️ Critical Incidents")
+        for incident in critical:
+            st.markdown(f"""
+            <div class='critical-item'>
+                <strong>⚠️</strong> {incident}
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
+    
     # Technical Examples
     st.markdown("### 🔧 Detailed Technical Examples")
     examples = audit_data.get("technical_examples", [])
@@ -587,6 +1034,8 @@ def display_results(audit_data):
             }.get(severity, '⚪')
             
             with st.expander(f"{severity_emoji} Example {i}: {example.get('issue_type', 'N/A')} - {example.get('customer_issue', 'N/A')[:50]}..."):
+                st.markdown(f"**Client Name:** {example.get('client_name', 'N/A')}")
+                st.markdown(f"**PIN Number:** {example.get('pin_number', 'N/A')}")
                 st.markdown(f"**Customer Issue:** {example.get('customer_issue', 'N/A')}")
                 st.markdown(f"**Agent Action:** {example.get('agent_action', 'N/A')}")
                 st.markdown(f"**PIN Handled Well:** {example.get('pin_handled_well', 'N/A')}")
@@ -621,23 +1070,34 @@ def display_results(audit_data):
         st.markdown("### ⭐ Standout Moments")
         for moment in standout:
             st.success(moment)
-    
-    # Critical Incidents
-    critical = audit_data.get("critical_incidents", [])
-    if critical:
-        st.markdown("---")
-        st.markdown("### ⚠️ Critical Incidents")
-        for incident in critical:
-            st.error(incident)
 
 # --- MAIN APP FLOW ---
 def main():
     # Header
-    st.markdown("<h1 class='main-header'>🤖 HostAfrica AI Auditor - Enhanced Edition</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #666;'>Comprehensive Performance Analysis with AI-Powered Insights</p>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-header'>🤖 HostAfrica AI Auditor - Enhanced Edition V2</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #666;'>Comprehensive Performance Analysis with AI-Powered Insights & Chat Volume Metrics</p>", unsafe_allow_html=True)
     
     # Sidebar
     st.sidebar.title("🏢 Agent Management")
+    st.sidebar.markdown("---")
+    
+    # Configuration settings
+    with st.sidebar.expander("⚙️ Review Settings"):
+        review_period = st.number_input(
+            "Review Period (days)", 
+            min_value=30, 
+            max_value=180, 
+            value=REVIEW_PERIOD_DAYS,
+            help="Default: 90 days (quarterly review)"
+        )
+        expected_weekly = st.number_input(
+            "Expected Chats per Week", 
+            min_value=20, 
+            max_value=100, 
+            value=EXPECTED_CHATS_PER_5_DAYS,
+            help="Based on 5-day work week"
+        )
+    
     st.sidebar.markdown("---")
     
     # Add new agent
@@ -647,7 +1107,9 @@ def main():
     if st.sidebar.button("➕ Add Agent", use_container_width=True):
         if new_agent_name:
             if new_agent_name not in st.session_state.agents:
-                st.session_state.agents[new_agent_name] = get_initial_agent(new_agent_name)
+                agent = get_initial_agent(new_agent_name)
+                agent['review_period_days'] = review_period
+                st.session_state.agents[new_agent_name] = agent
                 st.sidebar.success(f"Added {new_agent_name}")
                 st.rerun()
             else:
@@ -662,6 +1124,19 @@ def main():
     
     if not agent_list:
         st.info("👈 Please add an agent using the sidebar to begin")
+        
+        # Show performance standards
+        st.markdown("### 📊 Performance Standards")
+        st.info(f"""
+        **Quarterly Review Standards (90 days):**
+        - Expected chats per 5-day week: **{EXPECTED_CHATS_PER_5_DAYS}**
+        - Expected chats for 90-day period: **~{EXPECTED_CHATS_QUARTERLY}**
+        - Rating scale:
+          - 🟢 Excellent: 100%+ of expected
+          - 🟡 Good: 80-99% of expected
+          - 🟠 Needs Improvement: 60-79% of expected
+          - 🔴 Below Standard: <60% of expected
+        """)
         return
     
     # Select agent
@@ -732,7 +1207,12 @@ def main():
                     status_text.text("🤖 Running AI-powered comprehensive analysis...")
                     progress_bar.progress(60)
                     
-                    audit_result = run_comprehensive_audit(transcripts, selected_agent)
+                    audit_result = run_comprehensive_audit(
+                        transcripts, 
+                        selected_agent, 
+                        len(transcripts),
+                        agent.get('review_period_days', REVIEW_PERIOD_DAYS)
+                    )
                     
                     if audit_result:
                         # Update agent data
@@ -749,16 +1229,29 @@ def main():
                         
                         # Show quick summary
                         st.markdown("### Quick Summary")
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Overall Score", f"{audit_result.get('overall_score', 0)}/10")
                         col2.metric("Strengths", len(audit_result.get('key_strengths', [])))
                         col3.metric("Dev Areas", len(audit_result.get('key_development_areas', [])))
+                        
+                        volume_metrics = audit_result.get('volume_metrics', {})
+                        if volume_metrics:
+                            col4.metric("Volume Rating", volume_metrics.get('rating', 'N/A'))
                         
                         st.info("👉 Switch to the 'Detailed Results & Export' tab to view the full report and download PDF")
                     else:
                         st.error("❌ Analysis failed. Please try again or check the error messages above.")
         else:
             st.info("📤 Please upload a ZIP file containing tawk.to chat transcripts to begin analysis")
+            
+            # Show expected standards
+            st.markdown("### 📊 Performance Standards")
+            st.info(f"""
+            For a **90-day quarterly review**, we expect:
+            - **~{EXPECTED_CHATS_QUARTERLY} total chats** (based on {EXPECTED_CHATS_PER_5_DAYS} chats per 5-day week)
+            - Consistent daily performance across the review period
+            - Quality over quantity, but volume is also measured
+            """)
     
     with tab2:
         if agent.get("audit_data"):
@@ -770,11 +1263,11 @@ def main():
             # Export section
             st.markdown("### 📥 Export Report")
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 # Download PDF
-                if st.button("📄 Generate & Download PDF Report", use_container_width=True, type="primary"):
+                if st.button("📄 Generate PDF Report", use_container_width=True, type="primary"):
                     with st.spinner("Generating PDF report..."):
                         # Generate PDF
                         pdf_path = f"/tmp/performance_review_{selected_agent}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -786,20 +1279,43 @@ def main():
                         
                         # Download button
                         st.download_button(
-                            label="⬇️ Download PDF Report",
+                            label="⬇️ Download PDF",
                             data=pdf_data,
                             file_name=f"HostAfrica_Performance_Review_{selected_agent}_{datetime.now().strftime('%Y%m%d')}.pdf",
                             mime="application/pdf",
                             use_container_width=True
                         )
                         
-                        st.success("✅ PDF report generated successfully!")
+                        st.success("✅ PDF report generated!")
             
             with col2:
+                # Download Excel
+                if st.button("📊 Generate Excel Report", use_container_width=True, type="primary"):
+                    with st.spinner("Generating Excel report..."):
+                        # Generate Excel
+                        excel_path = f"/tmp/performance_review_{selected_agent}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                        generate_excel_report(agent, selected_agent, excel_path)
+                        
+                        # Read Excel
+                        with open(excel_path, "rb") as f:
+                            excel_data = f.read()
+                        
+                        # Download button
+                        st.download_button(
+                            label="⬇️ Download Excel",
+                            data=excel_data,
+                            file_name=f"HostAfrica_Performance_Review_{selected_agent}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                        
+                        st.success("✅ Excel report generated!")
+            
+            with col3:
                 # Download JSON
                 json_data = json.dumps(agent["audit_data"], indent=2)
                 st.download_button(
-                    label="📊 Download JSON Data",
+                    label="📋 Download JSON",
                     data=json_data,
                     file_name=f"audit_data_{selected_agent}_{datetime.now().strftime('%Y%m%d')}.json",
                     mime="application/json",
