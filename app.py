@@ -72,13 +72,6 @@ if GEMINI_API_KEY:
     # Using gemini-2.5-flash-lite for better free tier availability
     model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-# --- PERFORMANCE STANDARDS ---
-EXPECTED_CHATS_PER_5_DAYS = 100  # Baseline for 5-day work week
-REVIEW_PERIOD_DAYS = 90  # Quarterly review
-WORKDAYS_PER_WEEK = 5
-WEEKS_IN_REVIEW_PERIOD = REVIEW_PERIOD_DAYS / 7
-EXPECTED_CHATS_QUARTERLY = int((WEEKS_IN_REVIEW_PERIOD * WORKDAYS_PER_WEEK / 5) * EXPECTED_CHATS_PER_5_DAYS)
-
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
     st.session_state.agents = {}
@@ -92,45 +85,6 @@ def get_initial_agent(name=""):
         "raw_transcripts": [],
         "review_period_days": REVIEW_PERIOD_DAYS,
         "chat_dates": []
-    }
-
-# --- CHAT VOLUME ANALYSIS ---
-def calculate_chat_volume_metrics(total_chats, review_period_days=90):
-    """Calculate chat volume performance metrics"""
-    
-    # Expected chats for the review period
-    expected_chats = EXPECTED_CHATS_QUARTERLY
-    
-    # Calculate performance percentage
-    performance_percentage = (total_chats / expected_chats) * 100 if expected_chats > 0 else 0
-    
-    # Determine performance rating
-    if performance_percentage >= 100:
-        rating = "Excellent"
-        color = "success"
-    elif performance_percentage >= 80:
-        rating = "Good"
-        color = "info"
-    elif performance_percentage >= 60:
-        rating = "Needs Improvement"
-        color = "warning"
-    else:
-        rating = "Below Standard"
-        color = "error"
-    
-    # Calculate daily average
-    daily_average = total_chats / review_period_days if review_period_days > 0 else 0
-    weekly_average = daily_average * WORKDAYS_PER_WEEK
-    
-    return {
-        "total_chats": total_chats,
-        "expected_chats": expected_chats,
-        "performance_percentage": round(performance_percentage, 1),
-        "rating": rating,
-        "color": color,
-        "daily_average": round(daily_average, 1),
-        "weekly_average": round(weekly_average, 1),
-        "review_period_days": review_period_days
     }
 
 # --- RECURSIVE ZIP PROCESSING ---
@@ -183,7 +137,6 @@ def run_comprehensive_audit(transcripts, agent_name, total_chats, review_period_
     """Run comprehensive AI-powered audit with detailed analysis"""
     
     # Calculate chat volume metrics
-    volume_metrics = calculate_chat_volume_metrics(total_chats, review_period_days)
     
     # Use up to 50 transcripts for comprehensive analysis
     sample_size = min(50, len(transcripts))
@@ -196,8 +149,6 @@ You are conducting a comprehensive performance review of agent: {agent_name}
 REVIEW CONTEXT:
 - Total chats analyzed: {total_chats}
 - Review period: {review_period_days} days (quarterly review)
-- Expected chats for this period: {volume_metrics['expected_chats']}
-- Chat volume performance: {volume_metrics['performance_percentage']}% ({volume_metrics['rating']})
 
 CRITICAL INSTRUCTIONS:
 1. Analyze ONLY the agent's performance, NOT bots or automated messages
@@ -328,7 +279,6 @@ Return ONLY valid JSON in this exact structure:
     "critical_incidents": [
         "Any critical errors, serious security lapses, or major issues (be specific)"
     ],
-    "chat_volume_commentary": "Brief commentary on the agent's chat volume performance relative to expectations. Total: {total_chats}, Expected: {volume_metrics['expected_chats']}, Performance: {volume_metrics['rating']}"
 }}
 
 CHAT TRANSCRIPTS TO ANALYZE:
@@ -356,7 +306,6 @@ Remember: Base ALL examples and assessments on the ACTUAL transcripts provided a
             audit_result['metrics'][key] = min(float(audit_result['metrics'][key]), 5.0)
         
         # Add volume metrics to audit result
-        audit_result['volume_metrics'] = volume_metrics
         
         return audit_result
         
@@ -424,7 +373,6 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     story = []
     
     # Get volume metrics
-    volume_metrics = agent_data.get('audit_data', {}).get('volume_metrics', {})
     
     # Title
     story.append(Paragraph("PERFORMANCE REVIEW REPORT", title_style))
@@ -435,25 +383,16 @@ def generate_pdf_report(agent_data, agent_name, output_path):
     story.append(Spacer(1, 0.3*inch))
     
     # Chat Volume Performance Section
-    if volume_metrics:
-        story.append(Paragraph("CHAT VOLUME PERFORMANCE", heading1_style))
         
         volume_data = [
             ['Metric', 'Value', 'Assessment'],
-            ['Total Chats Handled', str(volume_metrics.get('total_chats', 0)), ''],
-            ['Expected Chats (90 days)', str(volume_metrics.get('expected_chats', 0)), ''],
-            ['Performance Rate', f"{volume_metrics.get('performance_percentage', 0)}%", volume_metrics.get('rating', 'N/A')],
-            ['Daily Average', f"{volume_metrics.get('daily_average', 0)}", ''],
-            ['Weekly Average', f"{volume_metrics.get('weekly_average', 0)}", f"Target: {EXPECTED_CHATS_PER_5_DAYS}/week"]
         ]
         
         volume_table = Table(volume_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
         
         # Color code based on performance
         rating_color = colors.HexColor('#28a745')  # Green
-        if volume_metrics.get('rating') == 'Needs Improvement':
             rating_color = colors.HexColor('#ffc107')  # Yellow
-        elif volume_metrics.get('rating') == 'Below Standard':
             rating_color = colors.HexColor('#dc3545')  # Red
         
         volume_table.setStyle(TableStyle([
@@ -677,10 +616,6 @@ def generate_excel_report(agent_data, agent_name, output_path):
     score_cell.alignment = center_align
     current_row += 3
 
-    # --- SECTION 3: CHAT VOLUME PERFORMANCE ---
-    volume_metrics = agent_data.get('audit_data', {}).get('volume_metrics', {})
-    if volume_metrics:
-        ws.cell(row=current_row, column=1, value="CHAT VOLUME PERFORMANCE").font = subheader_font
         ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
         current_row += 1
         
@@ -692,11 +627,6 @@ def generate_excel_report(agent_data, agent_name, output_path):
 
         volume_data = [
             ['Metric', 'Value', 'Assessment'],
-            ['Total Chats Handled', volume_metrics.get('total_chats', 0), ''],
-            ['Expected Chats (90 days)', volume_metrics.get('expected_chats', 0), ''],
-            ['Performance Rate', f"{volume_metrics.get('performance_percentage', 0)}%", volume_metrics.get('rating', 'N/A')],
-            ['Daily Average', volume_metrics.get('daily_average', 0), ''],
-            ['Weekly Average', volume_metrics.get('weekly_average', 0), target_str]
         ]
         
         for r_idx, row_data in enumerate(volume_data):
@@ -816,21 +746,15 @@ def display_results(audit_data):
     score = min(float(audit_data.get('overall_score', 0)), 10.0)
     
     # Chat Volume Metrics
-    volume_metrics = audit_data.get('volume_metrics', {})
     
-    if volume_metrics:
         st.markdown("### 📊 Chat Volume Performance")
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Chats", volume_metrics.get('total_chats', 0))
         with col2:
-            st.metric("Expected (90 days)", volume_metrics.get('expected_chats', 0))
         with col3:
-            perf_pct = volume_metrics.get('performance_percentage', 0)
             st.metric("Performance", f"{perf_pct}%")
         with col4:
-            rating = volume_metrics.get('rating', 'N/A')
             rating_emoji = {
                 'Excellent': '🟢',
                 'Good': '🟡',
@@ -915,7 +839,7 @@ def display_results(audit_data):
     # Critical Incidents (if any) - show prominently
     critical = audit_data.get("critical_incidents", [])
     if critical:
-        st.markdown("### ⚠️ Critical Incidents")
+        st.markdown("###⚠️ Critical Incidents")
         for incident in critical:
             st.markdown(f"""
             <div class='critical-item'>
@@ -1149,9 +1073,6 @@ def main():
                         col2.metric("Strengths", len(audit_result.get('key_strengths', [])))
                         col3.metric("Dev Areas", len(audit_result.get('key_development_areas', [])))
                         
-                        volume_metrics = audit_result.get('volume_metrics', {})
-                        if volume_metrics:
-                            col4.metric("Volume Rating", volume_metrics.get('rating', 'N/A'))
                         
                         st.info("👉 Switch to the 'Detailed Results & Export' tab to view the full report and download PDF")
                     else:
