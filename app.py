@@ -69,8 +69,8 @@ st.markdown("""
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Using gemini-1.5-flash for better free tier availability
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Using gemini-2.5-flash-lite for better free tier availability
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
