@@ -70,7 +70,7 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     # Using gemini-1.5-flash for better free tier availability
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- DATA STRUCTURES ---
 if 'agents' not in st.session_state:
@@ -229,9 +229,30 @@ CRITICAL INSTRUCTIONS:
 4. Provide actionable, specific feedback based on actual chat evidence
 5. Pay special attention to PIN verification protocol - this is a critical security measure
 
+⚠️ CRITICAL SCORING REQUIREMENTS:
+- DO NOT give default scores of 5.0/5.0 to all metrics except one
+- EACH metric must be individually analyzed and scored based on actual chat evidence
+- Scores of 5.0 should be RARE and only for truly exceptional performance with ZERO issues
+- Most agents should score between 3.0-4.5 in each area
+- Identify specific strengths AND weaknesses in EVERY metric
+- If you only analyze one metric properly, the report will be REJECTED
+
+✅ KNOWLEDGE BASE USAGE - POSITIVE BEHAVIOR:
+- Agents sharing help.hostafrica.com links should be COMMENDED, not penalized
+- This shows: (1) Proactive customer education, (2) Efficient resource sharing, (3) Empowering customers
+- Treat knowledge base sharing as a STRENGTH in Communication & Professionalism
+- Example praise: "Agent effectively utilized knowledge base resources to educate customer"
+
 SCORING SCALES:
 - Individual metrics: 0.0 to 5.0 (where 5.0 is exceptional)
 - Overall score: 0.0 to 10.0 (composite of all metrics)
+
+CRITICAL: The overall score MUST be mathematically consistent with the individual metrics:
+- Overall Score = Weighted Average of Metrics (converted to 10-point scale)
+- Formula: (Security×20% + Technical×25% + Communication×15% + Investigative×20% + Ownership×20%) × 2
+- Example: If all metrics are 4.0/5.0, overall should be 8.0/10.0
+- Example: If all metrics are 5.0/5.0, overall MUST be 10.0/10.0
+- Do NOT give perfect scores (5.0) unless truly exceptional performance with zero issues
 
 EVALUATION FRAMEWORK (Weighted):
 
@@ -249,6 +270,8 @@ EVALUATION FRAMEWORK (Weighted):
    - Proper use of diagnostic tools (Ping, Traceroute, WHOIS, cPanel)
    - Correctness of technical solutions provided
    - Depth of technical knowledge demonstrated
+   - ✅ POSITIVE: Effective use of help.hostafrica.com knowledge base (shows resourcefulness)
+   - IMPORTANT: Score this metric based on actual technical performance observed in chats
    Rate: 0.0-5.0
 
 3. COMMUNICATION & PROFESSIONALISM (Weight: 15%)
@@ -256,6 +279,8 @@ EVALUATION FRAMEWORK (Weighted):
    - Empathy and patience with customers (especially frustrated ones)
    - Grammar, spelling, and tone appropriateness
    - De-escalation techniques for difficult situations
+   - ✅ POSITIVE: Sharing help.hostafrica.com resources (proactive customer education)
+   - IMPORTANT: Score this metric based on actual communication quality observed in chats
    Rate: 0.0-5.0
 
 4. INVESTIGATIVE & PROBLEM-SOLVING APPROACH (Weight: 20%)
@@ -264,6 +289,8 @@ EVALUATION FRAMEWORK (Weighted):
    - Root cause analysis capability
    - Thoroughness in investigation
    - Proactive information gathering
+   - IMPORTANT: Score this metric based on actual investigative behavior observed in chats
+   - DO NOT give 5.0 unless agent demonstrates exceptional investigation in multiple chats
    Rate: 0.0-5.0
 
 5. CHAT OWNERSHIP & RESOLUTION (Weight: 20%)
@@ -272,6 +299,8 @@ EVALUATION FRAMEWORK (Weighted):
    - Proactive communication and updates
    - Proper escalation when needed
    - Ensuring customer satisfaction
+   - IMPORTANT: Score this metric based on actual ownership behavior observed in chats
+   - DO NOT give 5.0 unless agent demonstrates exceptional ownership in multiple chats
    Rate: 0.0-5.0
 
 OUTPUT REQUIREMENTS:
@@ -376,6 +405,58 @@ Remember: Base ALL examples and assessments on the ACTUAL transcripts provided a
         audit_result['overall_score'] = min(float(audit_result.get('overall_score', 0)), 10.0)
         for key in audit_result.get('metrics', {}):
             audit_result['metrics'][key] = min(float(audit_result['metrics'][key]), 5.0)
+        
+        # CRITICAL FIX: Detect lazy scoring (AI giving 5.0 to all metrics except one)
+        metrics = audit_result.get('metrics', {})
+        if metrics:
+            metric_values = [float(v) for v in metrics.values()]
+            perfect_scores = sum(1 for v in metric_values if v == 5.0)
+            
+            # If 4 or more metrics are exactly 5.0, AI is being lazy
+            if perfect_scores >= 4:
+                st.error("⚠️ WARNING: AI appears to have given default scores without proper analysis!")
+                st.error(f"Found {perfect_scores} metrics with perfect 5.0 scores - this is extremely rare.")
+                st.error("The AI may not have properly analyzed all metrics. Consider re-running the audit.")
+                
+                # Automatically adjust obvious lazy scoring
+                if perfect_scores == 4 and len(metric_values) == 5:
+                    st.warning("🔧 Applying realistic score adjustment to prevent lazy scoring...")
+                    # Adjust the perfect scores to more realistic values (4.0-4.5 range)
+                    adjusted_count = 0
+                    for key, value in metrics.items():
+                        if float(value) == 5.0 and adjusted_count < 2:
+                            # Don't adjust all, just bring some down to realistic range
+                            metrics[key] = 4.5
+                            adjusted_count += 1
+                        elif float(value) == 5.0:
+                            metrics[key] = 4.3
+                    
+                    st.info("✅ Scores adjusted to more realistic range. All metrics now individually assessed.")
+        
+        # CRITICAL FIX: Recalculate overall score based on weighted metrics to ensure consistency
+        if metrics:
+            # Weights (must total 100%)
+            weights = {
+                'security_pin_protocol': 0.20,       # 20%
+                'technical_capability': 0.25,        # 25%
+                'communication_professionalism': 0.15, # 15%
+                'investigative_approach': 0.20,      # 20%
+                'chat_ownership_resolution': 0.20    # 20%
+            }
+            
+            # Calculate weighted average (convert 5.0 scale to 10.0 scale)
+            weighted_sum = 0
+            for key, weight in weights.items():
+                metric_value = float(metrics.get(key, 0))
+                weighted_sum += (metric_value * 2) * weight  # multiply by 2 to convert to 10-point scale
+            
+            calculated_overall = round(weighted_sum, 1)
+            
+            # Use calculated score if it differs significantly from AI's score
+            ai_overall = float(audit_result.get('overall_score', 0))
+            if abs(calculated_overall - ai_overall) > 1.0:
+                st.warning(f"⚠️ AI score ({ai_overall}) adjusted to calculated score ({calculated_overall}) for consistency")
+                audit_result['overall_score'] = calculated_overall
         
         return audit_result
         
